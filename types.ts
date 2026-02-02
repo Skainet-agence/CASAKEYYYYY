@@ -1,29 +1,20 @@
-export interface AnalysisResult {
-  // Identification
-  room_type: string;
-  
-  // Vision Globale & Sécurité
-  visual_anchors: string[]; // List of protected elements (FR)
-  english_visual_anchors: string; // Concat string for backend (EN)
-  
-  // Ambiance & Standards
-  technical_prompt_additions: string; // Micro-standards (EN)
-  lighting_context: string; // New: Specific lighting analysis (EN)
+export interface MaskLayer {
+  id: number;
+  color: string; // Hex color
+  prompt: string;
+  base64Mask: string;
+}
 
-  // User Request Logic (Strict Bullet Points)
-  understanding_expanded: string[]; // FR (List of technical actions)
-  english_request_technical: string[]; // CHANGED: Now an Array of strings for distinct instructions (EN)
-
-  // Staging Logic (Cleaning Only)
-  ai_staging_suggestions: string[]; // FR (List of subtractive actions)
-  english_suggestions_technical: string[]; // EN (Technical prompt)
+export interface ProcessingRequest {
+  originalImage: string; // Base64
+  layers: MaskLayer[];
 }
 
 export enum AppStep {
   LOGIN = 'LOGIN',
   INTAKE = 'INTAKE',
-  AUDIT = 'AUDIT',
-  EXECUTING = 'EXECUTING',
+  EDITING = 'EDITING',
+  PROCESSING = 'PROCESSING',
   RESULT = 'RESULT',
 }
 
@@ -32,9 +23,8 @@ export interface EstateState {
   isAuthenticated: boolean;
   originalImage: File | null;
   originalImagePreview: string | null;
-  // maskImage removed
+  layers: MaskLayer[];
   userRequest: string;
-  analysis: AnalysisResult | null;
   correctedImage: string | null; // Base64 or URL
   error: string | null;
 }

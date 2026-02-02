@@ -1,331 +1,372 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { AuthGate } from './components/AuthGate';
 import { Intake } from './components/Intake';
-import { AuditView } from './components/AuditView';
 import { ResultView } from './components/ResultView';
-import { AppStep, EstateState } from './types';
-import { analyzeEstatePhoto, generateCorrection } from './services/gemini';
-import { KeyRound, AlertTriangle, XCircle } from 'lucide-react';
+import { ErrorBoundary } from './components/ErrorBoundary'; // Import Safety Boundary
+import InpaintingCanvas, { COLORS } from './components/InpaintingCanvas';
+import { PromptManager } from './components/PromptManager';
+import { AppStep, EstateState, MaskLayer, ProcessingRequest } from './types';
+import { KeyRound, AlertTriangle, XCircle, Paintbrush, Eraser, Move, Sliders } from 'lucide-react';
+import { processInpainting } from './services/gemini';
+import { saveImageToDB, getImageFromDB, clearImageFromDB } from './services/storage';
 
-// --- UTILS: COMPRESSION & CONVERSION ---
-
-const compressImage = (file: File): Promise<File> => {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      img.src = e.target?.result as string;
-    };
-    reader.onerror = (err) => reject(err);
-    reader.readAsDataURL(file);
-
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      let width = img.width;
-      let height = img.height;
-      const MAX_WIDTH = 1536;
-
-      if (width > MAX_WIDTH) {
-        height = Math.round(height * (MAX_WIDTH / width));
-        width = MAX_WIDTH;
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-      const ctx = canvas.getContext('2d');
-
-      if (!ctx) {
-        reject(new Error("Canvas context failed"));
-        return;
-      }
-
-      ctx.drawImage(img, 0, 0, width, height);
-
-      canvas.toBlob(
-        (blob) => {
-          if (blob) {
-            const newName = file.name.replace(/\.[^/.]+$/, "") + ".jpg";
-            resolve(new File([blob], newName, { type: 'image/jpeg' }));
-          } else {
-            reject(new Error("Image compression failed"));
-          }
-        },
-        'image/jpeg',
-        0.8
-      );
-    };
-  });
-};
-
-const base64ToFile = async (base64Url: string, filename: string): Promise<File> => {
-  const res = await fetch(base64Url);
-  const blob = await res.blob();
-  return new File([blob], filename, { type: blob.type });
-};
-
-// --- APP COMPONENT ---
+// APP VERSION LOG
+console.log("🚀 CASA KEYS APP - VERSION 3.2 (FAILSAFE) LOADED");
 
 const App: React.FC = () => {
   const [state, setState] = useState<EstateState>({
     step: AppStep.LOGIN,
     isAuthenticated: false,
-    originalImage: null,
-    originalImagePreview: null,
+    originalImage: null, // FULL RES BLOB (For AI)
+    originalImagePreview: null, // RESIZED BLOB URL (For Display)
+    layers: [],
     userRequest: '',
-    analysis: null,
     correctedImage: null,
     error: null,
   });
 
   const [isLoading, setIsLoading] = useState(false);
+  const [activeColor, setActiveColor] = useState(COLORS[0].hex);
+  const [tool, setTool] = useState<'brush' | 'eraser' | 'pan'>('brush');
+  const [brushSize, setBrushSize] = useState(40);
+  const [prompts, setPrompts] = useState<{ [color: string]: string }>({});
+  const [masks, setMasks] = useState<{ [color: string]: string }>({});
 
-  // 1. RESTORE STATE ON MOUNT
+  // Clean up Blob URLs
   useEffect(() => {
-    const savedState = localStorage.getItem('estateFix_state');
-    if (savedState) {
-      try {
-        const parsed = JSON.parse(savedState);
-        setState((prev) => ({
-          ...prev,
-          ...parsed,
-          originalImage: null,
-          error: null
-        }));
-      } catch (e) {
-        console.warn("Failed to restore state", e);
-        localStorage.removeItem('estateFix_state');
+     return () => {
+         if (state.originalImagePreview && state.originalImagePreview.startsWith('blob:')) {
+             URL.revokeObjectURL(state.originalImagePreview);
+         }
+     }
+  }, [state.originalImagePreview]);
+
+  useEffect(() => {
+    const loadState = async () => {
+      const savedState = localStorage.getItem('estateFix_state');
+      if (savedState) {
+        try {
+          const parsed = JSON.parse(savedState);
+          let restoredBlob: Blob | null = null;
+          let restoredUrl: string | null = null;
+
+          if (parsed.step === AppStep.EDITING || parsed.step === AppStep.PROCESSING || parsed.step === AppStep.RESULT) {
+             try {
+                restoredBlob = await getImageFromDB('currentImage'); 
+                if (restoredBlob) {
+                    restoredUrl = URL.createObjectURL(restoredBlob);
+                }
+             } catch (e) {
+                console.error("Failed to restore image", e);
+             }
+             
+             if (!restoredBlob) {
+                parsed.step = AppStep.INTAKE;
+             }
+          }
+
+          setState(prev => ({ 
+             ...prev, 
+             ...parsed, 
+             originalImage: restoredBlob, 
+             originalImagePreview: restoredUrl, 
+             error: null 
+          }));
+        } catch (e) {
+          localStorage.removeItem('estateFix_state');
+        }
       }
-    }
+    };
+    loadState();
   }, []);
 
-  // 2. PERSIST STATE ON CHANGE
   useEffect(() => {
     if (state.isAuthenticated) {
-      try {
-        const stateToSave = {
-          step: state.step,
-          isAuthenticated: state.isAuthenticated,
-          originalImagePreview: state.originalImagePreview,
-          userRequest: state.userRequest,
-          analysis: state.analysis,
-          correctedImage: state.correctedImage
-        };
-        localStorage.setItem('estateFix_state', JSON.stringify(stateToSave));
-      } catch (e) {
-        console.warn("State too large for LocalStorage persistence", e);
-      }
+      const stateToSave = {
+        step: state.step,
+        isAuthenticated: state.isAuthenticated,
+        userRequest: state.userRequest,
+        layers: state.layers,
+      };
+      localStorage.setItem('estateFix_state', JSON.stringify(stateToSave));
     }
-  }, [state.step, state.isAuthenticated, state.originalImagePreview, state.userRequest, state.analysis, state.correctedImage]);
+  }, [state]);
 
+  const handleAuthenticated = useCallback(() => {
+    setState(prev => {
+        if (prev.isAuthenticated) return prev;
+        return { ...prev, isAuthenticated: true, step: AppStep.INTAKE };
+    });
+  }, []);
 
-  const handleAuthenticated = () => {
-    setState(prev => ({ ...prev, isAuthenticated: true, step: AppStep.INTAKE }));
+  // Helper: Resize for Display (Crucial for preventing canvas crash)
+  const createDisplayBlob = (file: File): Promise<Blob> => {
+      return new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+              const img = new Image();
+              img.onload = () => {
+                  try {
+                    const canvas = document.createElement('canvas');
+                    // Max 1600px is safe for all devices including mobile
+                    const MAX_SIZE = 1600; 
+                    let w = img.width;
+                    let h = img.height;
+                    
+                    if (w > h) {
+                        if (w > MAX_SIZE) { h *= MAX_SIZE / w; w = MAX_SIZE; }
+                    } else {
+                        if (h > MAX_SIZE) { w *= MAX_SIZE / h; h = MAX_SIZE; }
+                    }
+
+                    canvas.width = w;
+                    canvas.height = h;
+                    const ctx = canvas.getContext('2d');
+                    if (ctx) {
+                        ctx.drawImage(img, 0, 0, w, h);
+                        canvas.toBlob((blob) => {
+                            if (blob) resolve(blob);
+                            else resolve(file); // Fallback to original
+                        }, 'image/jpeg', 0.9);
+                    } else {
+                        resolve(file); // Context failed
+                    }
+                  } catch (e) {
+                      console.error("Resize failed", e);
+                      resolve(file); // Critical fail, fallback to original
+                  }
+              };
+              img.onerror = () => resolve(file); // Image load failed
+              img.src = e.target?.result as string;
+          };
+          reader.onerror = () => resolve(file); // File read failed
+          reader.readAsDataURL(file);
+      });
   };
 
-  const handleIntakeComplete = async (file: File, request: string) => {
+  const handleIntakeComplete = async (file: File) => {
     setIsLoading(true);
-    setState(prev => ({ ...prev, error: null }));
+    setState(prev => ({ ...prev, error: null })); 
 
     try {
-      const compressedFile = await compressImage(file);
-      const reader = new FileReader();
-      
-      reader.onload = async () => {
-        const preview = reader.result as string;
-        
+        // 1. Save ORIGINAL High-Res to DB (for final processing)
         try {
-          const analysis = await analyzeEstatePhoto(compressedFile, request);
-          
-          setState(prev => ({
-            ...prev,
-            originalImage: compressedFile,
-            originalImagePreview: preview,
-            userRequest: request,
-            analysis,
-            step: AppStep.AUDIT,
-            error: null
-          }));
-        } catch (apiError: any) {
-          setState(prev => ({ ...prev, error: apiError.message || "Erreur d'analyse API." }));
-        } finally {
-          setIsLoading(false);
+            await saveImageToDB('currentImage', file);
+        } catch (dbError) {
+            console.warn("Persistence warning", dbError);
         }
-      };
-      
-      reader.readAsDataURL(compressedFile);
 
-    } catch (compressionError: any) {
-      console.error(compressionError);
-      setState(prev => ({ ...prev, error: "Erreur lors du traitement de l'image." }));
+        // 2. Create OPTIMIZED version for Display/Canvas (prevents UI Crash)
+        const displayBlob = await createDisplayBlob(file);
+        const displayUrl = URL.createObjectURL(displayBlob);
+
+        setState(prev => ({
+            ...prev,
+            originalImage: file, // Keep 4K Original
+            originalImagePreview: displayUrl, // Use Safe HD Version
+            step: AppStep.EDITING,
+        }));
+
+    } catch (err: any) {
+      console.error(err);
+      setState(prev => ({ ...prev, error: "Erreur d'importation." }));
+    } finally {
       setIsLoading(false);
     }
   };
 
-  const handleValidate = async (useAiSuggestions: boolean) => {
-    if (!state.analysis || !state.originalImagePreview) return;
-    
-    setIsLoading(true);
-    setState(prev => ({ ...prev, error: null, correctedImage: null })); 
-
-    try {
-        let imageToProcess = state.originalImage;
-        if (!imageToProcess) {
-            imageToProcess = await base64ToFile(state.originalImagePreview, "restored_image.jpg");
-        }
-
-        const corrected = await generateCorrection(
-            imageToProcess, 
-            state.analysis,
-            useAiSuggestions
-        );
-
-        setState(prev => ({
-            ...prev,
-            correctedImage: corrected,
-            step: AppStep.RESULT,
-            error: null
-        }));
-    } catch (error: any) {
-        console.error("Generation failed:", error);
-        setState(prev => ({
-            ...prev,
-            step: AppStep.AUDIT,
-            error: error.message || "Échec de la génération."
-        }));
-    } finally {
-        setIsLoading(false);
-    }
+  const handleMasksChange = (newMasks: { [color: string]: string }) => {
+    setMasks(newMasks);
   };
 
-  // --- REFINEMENT LOGIC (Loop on Result) ---
-  const handleRefine = async (instruction: string) => {
-    if (!state.analysis || !state.correctedImage) return;
+  const handlePromptChange = (color: string, value: string) => {
+    setPrompts(prev => ({ ...prev, [color]: value }));
+  };
 
+  const blobToBase64 = (blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  };
+
+  const handleSubmit = async () => {
+    if (!state.originalImage) return;
     setIsLoading(true);
-    const previousResult = state.correctedImage;
-    setState(prev => ({ ...prev, correctedImage: null, error: null })); // Show loading state
+    setState(prev => ({ ...prev, step: AppStep.PROCESSING, error: null }));
 
     try {
-        // We use the PREVIOUS result as the new input image
-        const imageToProcess = await base64ToFile(previousResult, "refinement_source.jpg");
+      // Send the ORIGINAL High-Res Image to AI
+      const base64Image = await blobToBase64(state.originalImage as Blob);
 
-        const refinedImage = await generateCorrection(
-            imageToProcess,
-            state.analysis, // Keep original context
-            false, // Suggestion flag irrelevant for refinement
-            instruction // New specific instruction
-        );
+      const layers: MaskLayer[] = Object.keys(masks).map((color, index) => ({
+        id: index,
+        color,
+        prompt: prompts[color] || state.userRequest || "Improve this area",
+        base64Mask: masks[color] // Mask is relative, backend/AI will handle scaling or we assume aspect ratio matches
+      })).filter(layer => layer.base64Mask);
 
-        setState(prev => ({
-            ...prev,
-            correctedImage: refinedImage,
-            step: AppStep.RESULT,
-            error: null
-        }));
+      const request: ProcessingRequest = {
+        originalImage: base64Image,
+        layers
+      };
 
-    } catch (error: any) {
-        console.error("Refinement failed:", error);
-        // On fail, restore previous image
-        setState(prev => ({
-            ...prev,
-            correctedImage: previousResult,
-            error: error.message || "Échec de l'optimisation."
-        }));
+      const resultUrl = await processInpainting(request);
+
+      setState(prev => ({
+        ...prev,
+        step: AppStep.RESULT,
+        correctedImage: resultUrl,
+        layers
+      }));
+    } catch (err: any) {
+      setState(prev => ({
+        ...prev,
+        step: AppStep.EDITING,
+        error: err.message || "Le traitement a échoué"
+      }));
     } finally {
-        setIsLoading(false);
+      setIsLoading(false);
     }
   };
 
   const handleReset = () => {
     localStorage.removeItem('estateFix_state');
-    setState(prev => ({
-        ...prev,
-        step: AppStep.INTAKE,
-        originalImage: null,
-        originalImagePreview: null,
-        userRequest: '',
-        analysis: null,
-        correctedImage: null,
-        error: null
-    }));
+    clearImageFromDB('currentImage'); 
+    setState({
+      step: AppStep.INTAKE,
+      isAuthenticated: true,
+      originalImage: null,
+      originalImagePreview: null,
+      layers: [],
+      userRequest: '',
+      correctedImage: null,
+      error: null,
+    });
+    setPrompts({});
+    setMasks({});
   };
 
-  if (!state.isAuthenticated) {
-    return <AuthGate onAuthenticated={handleAuthenticated} />;
-  }
-
   return (
-    <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans selection:bg-[#9a4430]/20 relative">
-
-      {/* ERROR BANNER */}
-      {state.error && (
-        <div className="bg-red-50 border-b border-red-200 p-4 sticky top-0 z-50 animate-in slide-in-from-top duration-300">
-          <div className="max-w-7xl mx-auto flex items-start gap-3">
-             <AlertTriangle className="text-red-600 flex-shrink-0 mt-0.5" size={20} />
-             <div className="flex-1">
-                <h4 className="text-sm font-bold text-red-800">Une erreur est survenue</h4>
-                <p className="text-sm text-red-700">{state.error}</p>
-             </div>
-             <button onClick={() => setState(prev => ({...prev, error: null}))} className="text-red-400 hover:text-red-600">
-                <XCircle size={20} />
-             </button>
-          </div>
-        </div>
-      )}
-
-      {/* HEADER */}
-      <header className="bg-white border-b border-stone-200 sticky top-0 z-40 shadow-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-            {/* LEFT: LOGO */}
-            <div className="flex items-center gap-4">
-                <div className="flex items-center gap-3">
-                   <div className="h-10 w-10 rounded-full bg-[#9a4430] flex items-center justify-center text-white shadow-md shadow-[#9a4430]/20">
-                      <KeyRound size={20} />
-                   </div>
-                   <div className="flex flex-col">
-                      <span className="text-[#9a4430] font-bold text-lg leading-tight tracking-tight">CASA KEYS</span>
-                      <span className="text-stone-500 text-[10px] font-semibold tracking-widest uppercase">Immobilier</span>
-                   </div>
-                </div>
-                
-                <div className="h-8 w-px bg-stone-200 mx-2 hidden sm:block"></div>
-                <span className="text-stone-400 font-medium text-sm hidden sm:block">AI Studio</span>
+    <AuthGate onAuthenticated={handleAuthenticated}>
+        <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans relative">
+        {state.error && (
+            <div className="bg-red-50 border-b border-red-200 p-4 sticky top-0 z-50 flex items-center gap-3">
+            <AlertTriangle className="text-red-600" size={20} />
+            <p className="text-sm text-red-700 flex-1">{state.error}</p>
+            <button onClick={() => setState(prev => ({...prev, error: null}))}><XCircle size={20}/></button>
             </div>
-        </div>
-      </header>
-
-      {/* MAIN CONTENT */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        {state.step === AppStep.INTAKE && (
-            <Intake onComplete={handleIntakeComplete} isLoading={isLoading} />
         )}
 
-        {state.step === AppStep.AUDIT && state.analysis && (
-            <AuditView 
-                analysis={state.analysis} 
-                onCancel={handleReset} 
-                onValidate={handleValidate}
-                isProcessing={isLoading}
-            />
-        )}
+        <header className="bg-white border-b border-stone-200 h-20 flex items-center px-8 shadow-sm">
+            <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-[#9a4430] flex items-center justify-center text-white"><KeyRound size={20} /></div>
+            <span className="text-[#9a4430] font-bold text-lg">CASA KEYS</span>
+            </div>
+        </header>
 
-        {state.step === AppStep.RESULT && state.originalImagePreview && (
+        <main className="max-w-7xl mx-auto px-4 py-8">
+            {state.step === AppStep.INTAKE && <Intake onComplete={handleIntakeComplete} isLoading={isLoading} />}
+            
+            {state.step === AppStep.EDITING && state.originalImagePreview && (
+                <ErrorBoundary>
+                    <div className="flex flex-col lg:flex-row gap-8 animate-in fade-in duration-500">
+                        <div className="flex-1 space-y-4">
+                        {/* Canvas Controls */}
+                        <div className="bg-white p-3 rounded-2xl border border-stone-200 shadow-sm flex flex-wrap items-center gap-6">
+                            <div className="flex bg-stone-100 p-1 rounded-xl">
+                            <button 
+                                onClick={() => setTool('brush')}
+                                className={`p-2 rounded-lg transition-all ${tool === 'brush' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
+                            >
+                                <Paintbrush size={20} />
+                            </button>
+                            <button 
+                                onClick={() => setTool('eraser')}
+                                className={`p-2 rounded-lg transition-all ${tool === 'eraser' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
+                            >
+                                <Eraser size={20} />
+                            </button>
+                            <button 
+                                onClick={() => setTool('pan')}
+                                className={`p-2 rounded-lg transition-all ${tool === 'pan' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
+                            >
+                                <Move size={20} />
+                            </button>
+                            </div>
+
+                            <div className="h-8 w-px bg-stone-200" />
+
+                            <div className="flex items-center gap-2">
+                            {COLORS.map((c) => (
+                                <button
+                                key={c.id}
+                                onClick={() => { setActiveColor(c.hex); setTool('brush'); }}
+                                className={`w-8 h-8 rounded-full border-4 transition-all ${activeColor === c.hex ? 'scale-110 shadow-md' : 'scale-90 opacity-40 hover:opacity-100'}`}
+                                style={{ backgroundColor: c.hex, borderColor: activeColor === c.hex ? 'white' : 'transparent' }}
+                                title={c.label}
+                                />
+                            ))}
+                            </div>
+
+                            <div className="h-8 w-px bg-stone-200" />
+
+                            <div className="flex items-center gap-3 flex-1 min-w-[150px]">
+                            <Sliders size={16} className="text-stone-400" />
+                            <input 
+                                type="range" 
+                                min="5" 
+                                max="100" 
+                                value={brushSize} 
+                                onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                                className="flex-1 accent-[#9a4430]"
+                            />
+                            <span className="text-xs font-mono text-stone-500 w-8">{brushSize}px</span>
+                            </div>
+                        </div>
+
+                        <InpaintingCanvas 
+                            imagePreview={state.originalImagePreview} 
+                            activeColor={activeColor}
+                            brushSize={brushSize}
+                            tool={tool}
+                            onMasksChange={handleMasksChange}
+                        />
+                        </div>
+
+                        <PromptManager 
+                        prompts={prompts}
+                        usedColors={Object.keys(masks).filter(k => masks[k])}
+                        onPromptChange={handlePromptChange}
+                        onSubmit={handleSubmit}
+                        isProcessing={isLoading}
+                        />
+                    </div>
+                </ErrorBoundary>
+            )}
+
+            {state.step === AppStep.PROCESSING && (
+                <div className="flex flex-col items-center justify-center py-20 animate-pulse">
+                    <div className="w-20 h-20 border-4 border-[#9a4430]/20 border-t-[#9a4430] rounded-full animate-spin mb-8" />
+                    <h2 className="text-2xl font-bold text-stone-800">L'IA retouche votre bien...</h2>
+                    <p className="text-stone-500 mt-2">Cela peut prendre jusqu'à 30 secondes.</p>
+                </div>
+            )}
+
+            {state.step === AppStep.RESULT && (
             <ResultView 
-                originalImage={state.originalImagePreview}
-                correctedImage={state.correctedImage}
-                error={state.error}
-                onReset={handleReset}
-                onRefine={handleRefine}
-                isProcessing={isLoading}
+                originalImage={state.originalImagePreview!} 
+                correctedImage={state.correctedImage} 
+                onReset={handleReset} 
+                onRefine={() => {}} 
+                isProcessing={isLoading} 
             />
-        )}
-      </main>
-      
-      {isLoading && (
-        <div className="fixed inset-0 bg-white/50 backdrop-blur-[2px] z-[60] pointer-events-none" />
-      )}
-    </div>
+            )}
+        </main>
+        </div>
+    </AuthGate>
   );
 };
 

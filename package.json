@@ -9,12 +9,17 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "konva": "^10.2.0",
     "lucide-react": "^0.563.0",
     "react": "^19.2.3",
-    "react-dom": "^19.2.3"
+    "react-dom": "^19.2.3",
+    "react-konva": "^19.2.1",
+    "use-image": "^1.1.4"
   },
   "devDependencies": {
     "@netlify/functions": "^2.8.2",
+    "@types/node": "^25.1.0",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",

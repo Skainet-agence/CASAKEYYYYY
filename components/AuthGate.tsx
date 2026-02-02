@@ -1,78 +1,87 @@
-import React, { useState } from 'react';
-import { KeyRound, AlertCircle, ArrowRight } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Lock, ArrowRight, ShieldCheck, KeyRound } from 'lucide-react';
 
 interface AuthGateProps {
   onAuthenticated: () => void;
+  children?: React.ReactNode;
 }
 
-export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated }) => {
+export const AuthGate: React.FC<AuthGateProps> = ({ onAuthenticated, children }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(false);
+  const [isAuth, setIsAuth] = useState(false);
 
-  // Updated Password
-  const APP_PASSWORD = "CasaKeys1!"; 
+  useEffect(() => {
+      const savedAuth = sessionStorage.getItem('estateFix_auth');
+      if (savedAuth === 'true') {
+          setIsAuth(true);
+          onAuthenticated();
+      }
+  }, [onAuthenticated]);
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === APP_PASSWORD) {
+    if (password === 'CASA2026') {
+      setIsAuth(true);
+      sessionStorage.setItem('estateFix_auth', 'true');
       onAuthenticated();
     } else {
       setError(true);
+      setPassword('');
     }
   };
 
+  if (isAuth) {
+      return <>{children}</>;
+  }
+
   return (
-    <div className="min-h-screen flex items-center justify-center bg-[#f5f5f4] px-4">
-      <div className="max-w-md w-full space-y-8 bg-white p-10 rounded-2xl shadow-[0_20px_50px_-12px_rgba(0,0,0,0.1)] border border-stone-200">
-        <div className="text-center">
-          <div className="mx-auto flex items-center justify-center h-20 w-20 rounded-full bg-[#9a4430]/10 mb-6">
-            <KeyRound className="h-10 w-10 text-[#9a4430]" />
-          </div>
-          <h2 className="text-3xl font-serif font-bold text-[#9a4430] tracking-tight">
-            CASA KEYS
-          </h2>
-          <p className="text-xs font-semibold tracking-widest text-stone-500 mt-1 uppercase">
-            Espace Pro &bull; Immobilier
-          </p>
-        </div>
+    <div className="min-h-screen bg-stone-900 flex items-center justify-center p-4 selection:bg-[#9a4430]/30">
+      <div className="bg-white max-w-md w-full rounded-3xl shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-500">
         
-        <form className="mt-8 space-y-6" onSubmit={handleLogin}>
-          <div className="space-y-2">
-            <label htmlFor="password" className="block text-sm font-medium text-stone-700">Code d'accès sécurisé</label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              required
-              className="appearance-none rounded-lg relative block w-full px-4 py-3 border border-stone-300 placeholder-stone-400 text-stone-900 focus:outline-none focus:ring-2 focus:ring-[#9a4430] focus:border-[#9a4430] sm:text-sm transition-all shadow-sm"
-              placeholder="••••••••"
-              value={password}
-              onChange={(e) => {
-                  setPassword(e.target.value);
-                  setError(false);
-              }}
-            />
-          </div>
-
-          {error && (
-            <div className="flex items-center text-red-600 text-sm bg-red-50 p-3 rounded-lg border border-red-100">
-              <AlertCircle className="h-4 w-4 mr-2" />
-              Identifiants incorrects.
+        {/* Header Visual */}
+        <div className="h-32 bg-gradient-to-br from-[#9a4430] to-[#7c3222] flex items-center justify-center relative overflow-hidden">
+            <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')] opacity-10"></div>
+            <div className="h-16 w-16 bg-white/10 backdrop-blur-md rounded-full flex items-center justify-center text-white border border-white/20 shadow-lg">
+                <KeyRound size={32} />
             </div>
-          )}
+        </div>
 
-          <div>
-            <button
-              type="submit"
-              className="group relative w-full flex justify-center py-3 px-4 border border-transparent text-sm font-medium rounded-lg text-white bg-[#9a4430] hover:bg-[#823927] focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#9a4430] transition-all shadow-md hover:shadow-lg"
-            >
-              Accéder au Studio
-              <ArrowRight className="ml-2 h-4 w-4 opacity-70 group-hover:translate-x-1 transition-transform" />
-            </button>
-          </div>
-        </form>
-        <div className="text-center text-xs text-stone-400">
-          Indice : Casa...
+        <div className="p-8 space-y-6">
+            <div className="text-center">
+                <h1 className="text-2xl font-bold text-stone-800">Accès Studio</h1>
+                <p className="text-stone-500 text-sm mt-1">Veuillez vous identifier pour accéder au moteur Nano Banana (4K).</p>
+            </div>
+
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <div className="space-y-2">
+                    <input
+                        autoFocus
+                        type="password"
+                        value={password}
+                        onChange={(e) => { setError(false); setPassword(e.target.value); }}
+                        className={`w-full px-4 py-4 rounded-xl border-2 bg-stone-50 text-xl tracking-[0.5em] text-center font-bold transition-all focus:outline-none placeholder:text-stone-300 placeholder:tracking-normal ${
+                            error 
+                            ? 'border-red-300 text-red-900 bg-red-50 focus:border-red-500 animate-shake' 
+                            : 'border-stone-200 text-stone-800 focus:border-[#9a4430] focus:bg-white focus:shadow-lg focus:shadow-[#9a4430]/10'
+                        }`}
+                        placeholder="MOT DE PASSE"
+                    />
+                </div>
+
+                <button
+                    type="submit"
+                    className="w-full bg-[#9a4430] text-white font-bold py-4 rounded-xl shadow-lg shadow-[#9a4430]/20 hover:bg-[#853a29] hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2 group"
+                >
+                    <span>Entrer</span>
+                    <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform" />
+                </button>
+            </form>
+            
+            <div className="pt-6 border-t border-stone-100 flex items-center justify-center gap-2 text-stone-400 text-xs">
+                <ShieldCheck size={14} />
+                <span className="font-medium">Chiffrement Client-Side End-to-End</span>
+            </div>
         </div>
       </div>
     </div>
