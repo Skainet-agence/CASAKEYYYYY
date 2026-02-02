@@ -6,7 +6,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'; // Import Safety Bou
 import InpaintingCanvas, { COLORS } from './components/InpaintingCanvas';
 import { PromptManager } from './components/PromptManager';
 import { AppStep, EstateState, MaskLayer, ProcessingRequest } from './types';
-import { KeyRound, AlertTriangle, XCircle, Paintbrush, Eraser, Move, Sliders } from 'lucide-react';
+import { KeyRound, AlertTriangle, XCircle, Paintbrush, Eraser, Move, Sliders, RefreshCw } from 'lucide-react';
 import { processInpainting } from './services/gemini';
 import { saveImageToDB, getImageFromDB, clearImageFromDB } from './services/storage';
 
@@ -28,7 +28,7 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [activeColor, setActiveColor] = useState(COLORS[0].hex);
   const [tool, setTool] = useState<'brush' | 'eraser' | 'pan'>('brush');
-  const [brushSize, setBrushSize] = useState(40);
+  const [brushSize, setBrushSize] = useState(20); // Changement demandé : Par défaut 20px
   const [prompts, setPrompts] = useState<{ [color: string]: string }>({});
   const [masks, setMasks] = useState<{ [color: string]: string }>({});
 
@@ -260,11 +260,21 @@ const App: React.FC = () => {
             </div>
         )}
 
-        <header className="bg-white border-b border-stone-200 h-20 flex items-center px-8 shadow-sm">
+        <header className="bg-white border-b border-stone-200 h-20 flex items-center px-8 shadow-sm justify-between">
             <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-full bg-[#9a4430] flex items-center justify-center text-white"><KeyRound size={20} /></div>
-            <span className="text-[#9a4430] font-bold text-lg">CASA KEYS</span>
+                <div className="h-10 w-10 rounded-full bg-[#9a4430] flex items-center justify-center text-white"><KeyRound size={20} /></div>
+                <span className="text-[#9a4430] font-bold text-lg">CASA KEYS</span>
             </div>
+            {/* Ajout du bouton "Nouvelle photo" si on est en mode édition */}
+            {state.step === AppStep.EDITING && (
+                 <button
+                 onClick={handleReset}
+                 className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-stone-500 bg-stone-100 hover:bg-stone-200 hover:text-stone-800 rounded-lg transition-colors"
+             >
+                 <RefreshCw size={14} />
+                 Changer d'image
+             </button>
+            )}
         </header>
 
         <main className="max-w-7xl mx-auto px-4 py-8">

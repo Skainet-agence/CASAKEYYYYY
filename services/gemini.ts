@@ -1,92 +1,152 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { ProcessingRequest } from '../types';
 
-// Initialize Gemini API
-const genAI = new GoogleGenerativeAI(import.meta.env.VITE_GOOGLE_API_KEY || '');
+const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 
-/**
- * Converts a base64 string to a GoogleGenerativeAI Part object.
- */
-function base64ToGenerativePart(base64Data: string, mimeType: string) {
-  return {
-    inlineData: {
-      data: base64Data.split(',')[1],
-      mimeType
-    },
-  };
+// Fonction de découverte de modèle plus robuste
+async function findBestImageModel(): Promise<string> {
+    try {
+        console.log("🔍 Scanning available models...");
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${API_KEY}`, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
+        // Fallback si le scan échoue
+        if (!response.ok) return "gemini-1.5-pro"; 
+
+        const data = await response.json();
+        if (!data.models) return "gemini-1.5-pro";
+
+        console.log("📋 Models List:", data.models.map((m: any) => m.name));
+
+        // Priorité 1: Gemini 2.0 Flash (Expérimental - souvent très capable)
+        const gemini2 = data.models.find((m: any) => m.name.includes("gemini-2.0-flash"));
+        if (gemini2) {
+             console.log("🎯 FOUND GEMINI 2.0:", gemini2.name);
+             return gemini2.name.replace("models/", "");
+        }
+
+        // Priorité 2: Gemini 1.5 Pro
+        const pro = data.models.find((m: any) => m.name.includes("gemini-1.5-pro"));
+        if (pro) {
+             console.log("🎯 FOUND GEMINI 1.5 PRO:", pro.name);
+             return pro.name.replace("models/", "");
+        }
+
+        // Fallback par défaut
+        console.log("⚠️ No specific match found in list, forcing default target.");
+        return "gemini-1.5-pro"; 
+    } catch (e) {
+        console.warn("Model Scan skipped:", e);
+        return "gemini-1.5-pro";
+    }
 }
 
-/**
- * Processes the image directly from the client side using Gemini 3.
- * NO COMPRESSION is applied to preserve 4K quality.
- */
 export async function processInpainting(request: ProcessingRequest): Promise<string> {
-  try {
-    // 1. Configuration: Model Selection with Fallback
-    let modelName = "gemini-3-pro-preview"; // Target Model (Nano Banana Pro)
-    let model = genAI.getGenerativeModel({ model: modelName });
+  if (!API_KEY) {
+    throw new Error("Clé API Google manquante.");
+  }
 
-    // 2. Prepare Prompt
+  try {
+    const MODEL_NAME = await findBestImageModel();
+    console.log(`🚀 Sending Request to ${MODEL_NAME}...`);
+
     let userInstructions = "";
     request.layers.forEach((layer, index) => {
         userInstructions += `- Zone ${layer.color} (${layer.id}): ${layer.prompt}\n`;
     });
 
-    const systemPrompt = `
-      Tu es une IA de retouche immobilière de Luxe (Standard "Architectural Digest").
-
-      RÈGLE D'OR N°1 : FORMAT & CADRAGE (INTOUCHABLE)
-      - Conserve STRICTEMENT le format de l'image (Carré, Rectangle, Portrait Téléphone).
-      - Ne change pas le ratio. Ne rogne pas (No crop). L'image de sortie doit se superposer parfaitement à l'originale.
-
-      RÈGLE D'OR N°2 : EXPLOSION DE QUALITÉ (SUBLIMATION)
-      Ton but est de vendre du rêve. L'image doit être techniquement parfaite (4K, zéro bruit, netteté rasoir).
-
-      RÈGLE D'OR N°3 : GESTION INTELLIGENTE DE LA LUMIÈRE
-      Analyse la scène et applique cet éclairage :
-      - SCÈNE INTÉRIEURE (Salon, Chambre, SDB) : BOOSTE LA LUMINOSITÉ (High Lumens). L'image doit être éclatante, très claire, avec des blancs purs et une lumière naturelle puissante. Débouche toutes les ombres.
-      - SCÈNE EXTÉRIEURE (Terrasse, Balcon, Jardin) : APPLIQUE UNE VIBE "ENSOLEILLÉE". Utilise des tons plus chauds, une lumière solaire directe, une ambiance "Golden Hour" accueillante.
-
-      RÈGLE D'OR N°4 : INPAINTING
-      Applique les changements demandés par le masque de façon invisible et photoréaliste.
-
-      INSTRUCTIONS UTILISATEUR (ZONES) :
-      ${userInstructions}
+    const promptText = `
+      You are an expert Luxury Real Estate AI.
+      TASK: Edit the input image based on the user instructions.
+      INSTRUCTIONS: ${userInstructions}
+      STYLE: Photorealistic 8K, Architectural Digest, Perfect Lighting.
+      OUTPUT: If you can generate images, generate the modified image. If you cannot generate images directly, describe the changes in detail and apologize.
     `;
 
-    // 3. Prepare Image Parts (Full Resolution)
-    const imagePart = base64ToGenerativePart(request.originalImage, "image/jpeg");
+    const payload = {
+      contents: [{
+        parts: [
+          { text: promptText },
+          { 
+             inline_data: { 
+               mime_type: "image/jpeg", 
+               data: request.originalImage.split(',')[1] 
+             } 
+          }
+        ]
+      }],
+      // Configuration minimale pour éviter les conflits de paramètres
+      generationConfig: {
+        temperature: 0.4
+      }
+    };
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90000); // 90s
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${API_KEY}`;
     
-    console.log(`🚀 Sending 4K Request to ${modelName}...`);
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal
+    });
     
-    try {
-        const result = await model.generateContent([systemPrompt, imagePart]);
-        const response = await result.response;
-        const text = response.text();
-        console.log("Gemini Response:", text);
-        
-        // Return original image as placeholder since API returns text currently
-        return request.originalImage;
-        
-    } catch (apiError: any) {
-        // Fallback logic for model 404 or unavailability
-        if (apiError.message?.includes('404') || apiError.message?.includes('not found')) {
-            console.warn(`Model ${modelName} not found. Fallback to gemini-1.5-pro...`);
-            model = genAI.getGenerativeModel({ model: "gemini-1.5-pro" });
-            const fallbackResult = await model.generateContent([systemPrompt, imagePart]);
-            const fallbackResponse = await fallbackResult.response;
-            console.log("Gemini Fallback Response:", fallbackResponse.text());
-            return request.originalImage;
-        }
-        throw apiError;
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(`Erreur API (${response.status} - ${MODEL_NAME}): ${errText.substring(0, 200)}...`);
     }
 
+    const result = await response.json();
+    console.log("AI Response Received", result);
+
+    if (result.candidates && result.candidates.length > 0) {
+        const candidate = result.candidates[0];
+        
+        // Gestion des Filtres de Sécurité (SAFETY)
+        if (candidate.finishReason === "SAFETY") {
+             console.warn("Safety Ratings:", candidate.safetyRatings);
+             throw new Error("L'image a été bloquée par le filtre de sécurité de Google (Safety). Essayez de reformuler votre demande.");
+        }
+
+        if (candidate.content && candidate.content.parts && candidate.content.parts.length > 0) {
+            for (const part of candidate.content.parts) {
+                if (part.inline_data && part.inline_data.data) {
+                    console.log("✅ Image Generated Successfully!");
+                    return `data:${part.inline_data.mime_type};base64,${part.inline_data.data}`;
+                }
+            }
+            
+            const text = candidate.content.parts[0]?.text;
+            if (text) {
+                console.warn("⚠️ API returned text only:", text);
+                throw new Error(`L'IA a répondu (Texte): "${text.substring(0, 100)}..."`);
+            }
+        }
+        
+        if (candidate.finishReason) {
+             throw new Error(`Génération terminée sans contenu. Raison: ${candidate.finishReason}`);
+        }
+    }
+
+    console.error("Unexpected JSON Structure:", JSON.stringify(result, null, 2));
+    throw new Error(`Format de réponse inconnu. Structure reçue: ${JSON.stringify(result).substring(0, 200)}...`);
+
   } catch (error: any) {
-    console.error("Gemini Direct Error:", error);
-    throw new Error(`Erreur Gemini Direct: ${error.message}`);
+    if (error.name === 'AbortError') {
+        throw new Error("Le traitement a pris trop de temps (Timeout 90s).");
+    }
+    console.error("Inpainting Error:", error);
+    throw error;
   }
 }
 
-// Deprecated functions
 export async function analyzeEstatePhoto(file: File, request: string): Promise<any> { return {}; }
 export async function generateCorrection(file: File, analysis: any, useAiSuggestions: boolean, refinement?: string): Promise<string> { return ""; }
