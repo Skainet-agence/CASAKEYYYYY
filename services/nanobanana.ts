@@ -14,18 +14,13 @@ export async function generateEnhancedImage(
 ): Promise<string> {
     if (!API_KEY) throw new Error("Clé API Google manquante.");
 
-    const MODEL_NAME = "gemini-2.0-flash-exp-image-generation";
+    // Original working model
+    const MODEL_NAME = "gemini-3-pro-image-preview";
 
     try {
         console.log(`🔒 Text-Only Precision: Generating without mask image...`);
         const genAI = new GoogleGenerativeAI(API_KEY);
-        const model = genAI.getGenerativeModel({
-            model: MODEL_NAME,
-            generationConfig: {
-                // @ts-ignore - responseModalities is valid for image generation
-                responseModalities: ["Text", "Image"],
-            }
-        });
+        const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
         // Build parts: ONLY source image + text instructions (NO mask)
         const parts: Part[] = [
