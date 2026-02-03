@@ -37,54 +37,56 @@ export async function findBestImageModel(): Promise<string> {
 export async function generateEnhancedImage(prompt: string, originalImageBase64: string, maskImageBase64?: string): Promise<string> {
     if (!API_KEY) throw new Error("Clé API Google manquante.");
 
-    try {
-        const MODEL_NAME = "imagen-3.0-generate-001";
-        console.log(`🍌 Nano Banana (via ${MODEL_NAME}) generating...`);
-        console.log("📝 PROMPT SENT:", prompt);
+    const MODEL_CANDIDATES = [
+        "imagen-3.0-generate-001",
+        "imagen-3.0-fast-generate-001",
+        "gemini-2.0-flash", // Testing if direct IMAGE modality works
+        "gemini-3-pro-image-preview",
+        "imagen-2.0-generate-001"
+    ];
 
-        const genAI = new GoogleGenerativeAI(API_KEY);
-        // We use the latest model for image generation
-        const model = genAI.getGenerativeModel({ model: MODEL_NAME });
+    let lastError: any = null;
+    console.log("🚀 Starting Model Discovery Race...");
 
-        // Imagen 3 T2I (Text-to-Image) is most stable on AI Studio right now.
-        const parts: Part[] = [{ text: prompt }];
+    for (const modelName of MODEL_CANDIDATES) {
+        try {
+            console.log(`📡 Attempting generation with: ${modelName}`);
+            const genAI = new GoogleGenerativeAI(API_KEY);
+            const model = genAI.getGenerativeModel({ model: modelName });
 
-        const result = await model.generateContent({
-            contents: [{ role: 'user', parts }],
-        });
+            const parts: Part[] = [{ text: prompt }];
 
-        const response = await result.response;
-        console.log("🍌 AI Response received:", JSON.stringify(response).substring(0, 200) + "...");
+            // Sequential attempt
+            const result = await model.generateContent({
+                contents: [{ role: 'user', parts }],
+            });
 
-        if (response.candidates && response.candidates.length > 0) {
-            const candidate = response.candidates[0];
+            const response = await result.response;
 
-            // Check for safety filter
-            if (candidate.finishReason === "SAFETY" || candidate.finishReason === "OTHER") {
-                throw new Error(`Génération bloquée par le filtre de sécurité (${candidate.finishReason}).`);
-            }
-
-            if (candidate.content && candidate.content.parts) {
-                for (const part of candidate.content.parts) {
-                    if (part.inlineData && part.inlineData.data) {
-                        console.log("✅ Image data found in response!");
-                        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+            if (response.candidates && response.candidates.length > 0) {
+                const candidate = response.candidates[0];
+                if (candidate.content && candidate.content.parts) {
+                    for (const part of candidate.content.parts) {
+                        if (part.inlineData && part.inlineData.data) {
+                            console.log(`✅ SUCCESS with model: ${modelName}`);
+                            return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                        }
                     }
                 }
             }
+            console.warn(`⚠️ Model ${modelName} did not return image data.`);
+        } catch (err: any) {
+            console.error(`❌ Model ${modelName} FAILED:`, err.message);
+            lastError = err;
         }
-
-        throw new Error("Le modèle n'a pas renvoyé de données d'image. Vérifiez votre quota ou l'éligibilité de votre clé pour Imagen 3.");
-
-    } catch (error: any) {
-        console.error("🍌 Nano Banana Error:", error);
-
-        // Detailed error for the user
-        let msg = error.message || "Erreur inconnue";
-        if (msg.includes("404")) msg = "Modèle Imagen 3 non trouvé sur cette clé. Vérifiez l'activation dans Google AI Studio.";
-        if (msg.includes("429")) msg = "Quota dépassé (Trop de requêtes).";
-        if (msg.includes("403")) msg = "Accès refusé. La clé API n'a peut-être pas les droits pour Imagen 3.";
-
-        throw new Error(msg);
     }
+
+    // If we reach here, all candidates failed.
+    console.error("💀 ALL Image-Gen models failed.");
+
+    let msg = "Aucun modèle d'image (Imagen 3, Gemini 3) n'a fonctionné avec votre clé.";
+    if (lastError?.message?.includes("404")) msg += ` (Le dernier testé, ${MODEL_CANDIDATES[MODEL_CANDIDATES.length - 1]}, était introuvable)`;
+    if (lastError?.message?.includes("429")) msg += " (Quota atteint)";
+
+    throw new Error(msg);
 }
