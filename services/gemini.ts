@@ -3,6 +3,13 @@ import { ProcessingRequest, MaskLayer } from '../types';
 
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 
+// Debug log for production
+if (!API_KEY) {
+  console.error("❌ VITE_GOOGLE_API_KEY is missing in import.meta.env");
+} else {
+  console.log(`✅ VITE_GOOGLE_API_KEY found (length: ${API_KEY.length})`);
+}
+
 // ═══════════════════════════════════════════════════════════════
 //                    PROMPT ENHANCEMENT ENGINE
 // ═══════════════════════════════════════════════════════════════
