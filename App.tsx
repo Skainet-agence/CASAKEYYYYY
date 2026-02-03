@@ -7,11 +7,11 @@ import InpaintingCanvas, { COLORS } from './components/InpaintingCanvas';
 import { PromptManager } from './components/PromptManager';
 import { AppStep, EstateState, MaskLayer, ProcessingRequest } from './types';
 import { KeyRound, AlertTriangle, XCircle, Paintbrush, Eraser, Move, Sliders, RefreshCw } from 'lucide-react';
-import { processInpainting } from './services/gemini';
+import { processEstateImage, refineEstateImage } from './services/orchestrator';
 import { saveImageToDB, getImageFromDB, clearImageFromDB } from './services/storage';
 
 // APP VERSION LOG
-console.log("🚀 CASA KEYS APP - VERSION 3.2 (FAILSAFE) LOADED");
+console.log("🚀 CASA KEYS APP - VERSION 4.0 (DUAL AI ORCHESTRATION)");
 
 const App: React.FC = () => {
   const [state, setState] = useState<EstateState>({
@@ -28,17 +28,20 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [activeColor, setActiveColor] = useState(COLORS[0].hex);
   const [tool, setTool] = useState<'brush' | 'eraser' | 'pan'>('brush');
-  const [brushSize, setBrushSize] = useState(20); // Changement demandé : Par défaut 20px
+  const [brushSize, setBrushSize] = useState(20);
   const [prompts, setPrompts] = useState<{ [color: string]: string }>({});
   const [masks, setMasks] = useState<{ [color: string]: string }>({});
 
+  // New State for Orchestrator Context
+  const [currentPrompt, setCurrentPrompt] = useState<string>("");
+
   // Clean up Blob URLs
   useEffect(() => {
-     return () => {
-         if (state.originalImagePreview && state.originalImagePreview.startsWith('blob:')) {
-             URL.revokeObjectURL(state.originalImagePreview);
-         }
-     }
+    return () => {
+      if (state.originalImagePreview && state.originalImagePreview.startsWith('blob:')) {
+        URL.revokeObjectURL(state.originalImagePreview);
+      }
+    }
   }, [state.originalImagePreview]);
 
   useEffect(() => {
@@ -51,26 +54,26 @@ const App: React.FC = () => {
           let restoredUrl: string | null = null;
 
           if (parsed.step === AppStep.EDITING || parsed.step === AppStep.PROCESSING || parsed.step === AppStep.RESULT) {
-             try {
-                restoredBlob = await getImageFromDB('currentImage'); 
-                if (restoredBlob) {
-                    restoredUrl = URL.createObjectURL(restoredBlob);
-                }
-             } catch (e) {
-                console.error("Failed to restore image", e);
-             }
-             
-             if (!restoredBlob) {
-                parsed.step = AppStep.INTAKE;
-             }
+            try {
+              restoredBlob = await getImageFromDB('currentImage');
+              if (restoredBlob) {
+                restoredUrl = URL.createObjectURL(restoredBlob);
+              }
+            } catch (e) {
+              console.error("Failed to restore image", e);
+            }
+
+            if (!restoredBlob) {
+              parsed.step = AppStep.INTAKE;
+            }
           }
 
-          setState(prev => ({ 
-             ...prev, 
-             ...parsed, 
-             originalImage: restoredBlob, 
-             originalImagePreview: restoredUrl, 
-             error: null 
+          setState(prev => ({
+            ...prev,
+            ...parsed,
+            originalImage: restoredBlob,
+            originalImagePreview: restoredUrl,
+            error: null
           }));
         } catch (e) {
           localStorage.removeItem('estateFix_state');
@@ -94,78 +97,78 @@ const App: React.FC = () => {
 
   const handleAuthenticated = useCallback(() => {
     setState(prev => {
-        if (prev.isAuthenticated) return prev;
-        return { ...prev, isAuthenticated: true, step: AppStep.INTAKE };
+      if (prev.isAuthenticated) return prev;
+      return { ...prev, isAuthenticated: true, step: AppStep.INTAKE };
     });
   }, []);
 
   // Helper: Resize for Display (Crucial for preventing canvas crash)
   const createDisplayBlob = (file: File): Promise<Blob> => {
-      return new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onload = (e) => {
-              const img = new Image();
-              img.onload = () => {
-                  try {
-                    const canvas = document.createElement('canvas');
-                    // Max 1600px is safe for all devices including mobile
-                    const MAX_SIZE = 1600; 
-                    let w = img.width;
-                    let h = img.height;
-                    
-                    if (w > h) {
-                        if (w > MAX_SIZE) { h *= MAX_SIZE / w; w = MAX_SIZE; }
-                    } else {
-                        if (h > MAX_SIZE) { w *= MAX_SIZE / h; h = MAX_SIZE; }
-                    }
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          try {
+            const canvas = document.createElement('canvas');
+            // Max 1600px is safe for all devices including mobile
+            const MAX_SIZE = 1600;
+            let w = img.width;
+            let h = img.height;
 
-                    canvas.width = w;
-                    canvas.height = h;
-                    const ctx = canvas.getContext('2d');
-                    if (ctx) {
-                        ctx.drawImage(img, 0, 0, w, h);
-                        canvas.toBlob((blob) => {
-                            if (blob) resolve(blob);
-                            else resolve(file); // Fallback to original
-                        }, 'image/jpeg', 0.9);
-                    } else {
-                        resolve(file); // Context failed
-                    }
-                  } catch (e) {
-                      console.error("Resize failed", e);
-                      resolve(file); // Critical fail, fallback to original
-                  }
-              };
-              img.onerror = () => resolve(file); // Image load failed
-              img.src = e.target?.result as string;
-          };
-          reader.onerror = () => resolve(file); // File read failed
-          reader.readAsDataURL(file);
-      });
+            if (w > h) {
+              if (w > MAX_SIZE) { h *= MAX_SIZE / w; w = MAX_SIZE; }
+            } else {
+              if (h > MAX_SIZE) { w *= MAX_SIZE / h; h = MAX_SIZE; }
+            }
+
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              ctx.drawImage(img, 0, 0, w, h);
+              canvas.toBlob((blob) => {
+                if (blob) resolve(blob);
+                else resolve(file); // Fallback to original
+              }, 'image/jpeg', 0.9);
+            } else {
+              resolve(file); // Context failed
+            }
+          } catch (e) {
+            console.error("Resize failed", e);
+            resolve(file); // Critical fail, fallback to original
+          }
+        };
+        img.onerror = () => resolve(file); // Image load failed
+        img.src = e.target?.result as string;
+      };
+      reader.onerror = () => resolve(file); // File read failed
+      reader.readAsDataURL(file);
+    });
   };
 
   const handleIntakeComplete = async (file: File) => {
     setIsLoading(true);
-    setState(prev => ({ ...prev, error: null })); 
+    setState(prev => ({ ...prev, error: null }));
 
     try {
-        // 1. Save ORIGINAL High-Res to DB (for final processing)
-        try {
-            await saveImageToDB('currentImage', file);
-        } catch (dbError) {
-            console.warn("Persistence warning", dbError);
-        }
+      // 1. Save ORIGINAL High-Res to DB (for final processing)
+      try {
+        await saveImageToDB('currentImage', file);
+      } catch (dbError) {
+        console.warn("Persistence warning", dbError);
+      }
 
-        // 2. Create OPTIMIZED version for Display/Canvas (prevents UI Crash)
-        const displayBlob = await createDisplayBlob(file);
-        const displayUrl = URL.createObjectURL(displayBlob);
+      // 2. Create OPTIMIZED version for Display/Canvas (prevents UI Crash)
+      const displayBlob = await createDisplayBlob(file);
+      const displayUrl = URL.createObjectURL(displayBlob);
 
-        setState(prev => ({
-            ...prev,
-            originalImage: file, // Keep 4K Original
-            originalImagePreview: displayUrl, // Use Safe HD Version
-            step: AppStep.EDITING,
-        }));
+      setState(prev => ({
+        ...prev,
+        originalImage: file, // Keep 4K Original
+        originalImagePreview: displayUrl, // Use Safe HD Version
+        step: AppStep.EDITING,
+      }));
 
     } catch (err: any) {
       console.error(err);
@@ -213,12 +216,15 @@ const App: React.FC = () => {
         layers
       };
 
-      const resultUrl = await processInpainting(request);
+      // USE ORCHESTRATOR
+      const { imageUrl, finalPrompt } = await processEstateImage(request);
+
+      setCurrentPrompt(finalPrompt);
 
       setState(prev => ({
         ...prev,
         step: AppStep.RESULT,
-        correctedImage: resultUrl,
+        correctedImage: imageUrl,
         layers
       }));
     } catch (err: any) {
@@ -232,9 +238,32 @@ const App: React.FC = () => {
     }
   };
 
+  const handleRefine = async (instruction: string) => {
+    if (!state.correctedImage) return;
+    setIsLoading(true);
+
+    try {
+      // In a real app we would pass the "Seed" or the server-side ID of the image
+      // Here we pass the current image blob (data url)
+      const { imageUrl, finalPrompt } = await refineEstateImage(
+        state.correctedImage,
+        currentPrompt,
+        instruction
+      );
+
+      setCurrentPrompt(finalPrompt);
+      setState(prev => ({ ...prev, correctedImage: imageUrl }));
+
+    } catch (err: any) {
+      setState(prev => ({ ...prev, error: "Echec de la retouche: " + err.message }));
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleReset = () => {
     localStorage.removeItem('estateFix_state');
-    clearImageFromDB('currentImage'); 
+    clearImageFromDB('currentImage');
     setState({
       step: AppStep.INTAKE,
       isAuthenticated: true,
@@ -247,135 +276,140 @@ const App: React.FC = () => {
     });
     setPrompts({});
     setMasks({});
+    setCurrentPrompt("");
   };
 
   return (
     <AuthGate onAuthenticated={handleAuthenticated}>
-        <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans relative">
+      <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans relative">
         {state.error && (
-            <div className="bg-red-50 border-b border-red-200 p-4 sticky top-0 z-50 flex items-center gap-3">
+          <div className="bg-red-50 border-b border-red-200 p-4 sticky top-0 z-50 flex items-center gap-3">
             <AlertTriangle className="text-red-600" size={20} />
             <p className="text-sm text-red-700 flex-1">{state.error}</p>
-            <button onClick={() => setState(prev => ({...prev, error: null}))}><XCircle size={20}/></button>
-            </div>
+            <button onClick={() => setState(prev => ({ ...prev, error: null }))}><XCircle size={20} /></button>
+          </div>
         )}
 
         <header className="bg-white border-b border-stone-200 h-20 flex items-center px-8 shadow-sm justify-between">
-            <div className="flex items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-[#9a4430] flex items-center justify-center text-white"><KeyRound size={20} /></div>
-                <span className="text-[#9a4430] font-bold text-lg">CASA KEYS</span>
-            </div>
-            {/* Ajout du bouton "Nouvelle photo" si on est en mode édition */}
-            {state.step === AppStep.EDITING && (
-                 <button
-                 onClick={handleReset}
-                 className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-stone-500 bg-stone-100 hover:bg-stone-200 hover:text-stone-800 rounded-lg transition-colors"
-             >
-                 <RefreshCw size={14} />
-                 Changer d'image
-             </button>
-            )}
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-[#9a4430] flex items-center justify-center text-white"><KeyRound size={20} /></div>
+            <span className="text-[#9a4430] font-bold text-lg">CASA KEYS</span>
+          </div>
+          {/* Ajout du bouton "Nouvelle photo" si on est en mode édition */}
+          {state.step === AppStep.EDITING && (
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-stone-500 bg-stone-100 hover:bg-stone-200 hover:text-stone-800 rounded-lg transition-colors"
+            >
+              <RefreshCw size={14} />
+              Changer d'image
+            </button>
+          )}
         </header>
 
         <main className="max-w-7xl mx-auto px-4 py-8">
-            {state.step === AppStep.INTAKE && <Intake onComplete={handleIntakeComplete} isLoading={isLoading} />}
-            
-            {state.step === AppStep.EDITING && state.originalImagePreview && (
-                <ErrorBoundary>
-                    <div className="flex flex-col lg:flex-row gap-8 animate-in fade-in duration-500">
-                        <div className="flex-1 space-y-4">
-                        {/* Canvas Controls */}
-                        <div className="bg-white p-3 rounded-2xl border border-stone-200 shadow-sm flex flex-wrap items-center gap-6">
-                            <div className="flex bg-stone-100 p-1 rounded-xl">
-                            <button 
-                                onClick={() => setTool('brush')}
-                                className={`p-2 rounded-lg transition-all ${tool === 'brush' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
-                            >
-                                <Paintbrush size={20} />
-                            </button>
-                            <button 
-                                onClick={() => setTool('eraser')}
-                                className={`p-2 rounded-lg transition-all ${tool === 'eraser' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
-                            >
-                                <Eraser size={20} />
-                            </button>
-                            <button 
-                                onClick={() => setTool('pan')}
-                                className={`p-2 rounded-lg transition-all ${tool === 'pan' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
-                            >
-                                <Move size={20} />
-                            </button>
-                            </div>
+          {state.step === AppStep.INTAKE && <Intake onComplete={handleIntakeComplete} isLoading={isLoading} />}
 
-                            <div className="h-8 w-px bg-stone-200" />
-
-                            <div className="flex items-center gap-2">
-                            {COLORS.map((c) => (
-                                <button
-                                key={c.id}
-                                onClick={() => { setActiveColor(c.hex); setTool('brush'); }}
-                                className={`w-8 h-8 rounded-full border-4 transition-all ${activeColor === c.hex ? 'scale-110 shadow-md' : 'scale-90 opacity-40 hover:opacity-100'}`}
-                                style={{ backgroundColor: c.hex, borderColor: activeColor === c.hex ? 'white' : 'transparent' }}
-                                title={c.label}
-                                />
-                            ))}
-                            </div>
-
-                            <div className="h-8 w-px bg-stone-200" />
-
-                            <div className="flex items-center gap-3 flex-1 min-w-[150px]">
-                            <Sliders size={16} className="text-stone-400" />
-                            <input 
-                                type="range" 
-                                min="5" 
-                                max="100" 
-                                value={brushSize} 
-                                onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                                className="flex-1 accent-[#9a4430]"
-                            />
-                            <span className="text-xs font-mono text-stone-500 w-8">{brushSize}px</span>
-                            </div>
-                        </div>
-
-                        <InpaintingCanvas 
-                            imagePreview={state.originalImagePreview} 
-                            activeColor={activeColor}
-                            brushSize={brushSize}
-                            tool={tool}
-                            onMasksChange={handleMasksChange}
-                        />
-                        </div>
-
-                        <PromptManager 
-                        prompts={prompts}
-                        usedColors={Object.keys(masks).filter(k => masks[k])}
-                        onPromptChange={handlePromptChange}
-                        onSubmit={handleSubmit}
-                        isProcessing={isLoading}
-                        />
+          {state.step === AppStep.EDITING && state.originalImagePreview && (
+            <ErrorBoundary>
+              <div className="flex flex-col lg:flex-row gap-8 animate-in fade-in duration-500">
+                <div className="flex-1 space-y-4">
+                  {/* Canvas Controls */}
+                  <div className="bg-white p-3 rounded-2xl border border-stone-200 shadow-sm flex flex-wrap items-center gap-6">
+                    <div className="flex bg-stone-100 p-1 rounded-xl">
+                      <button
+                        onClick={() => setTool('brush')}
+                        className={`p-2 rounded-lg transition-all ${tool === 'brush' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
+                      >
+                        <Paintbrush size={20} />
+                      </button>
+                      <button
+                        onClick={() => setTool('eraser')}
+                        className={`p-2 rounded-lg transition-all ${tool === 'eraser' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
+                      >
+                        <Eraser size={20} />
+                      </button>
+                      <button
+                        onClick={() => setTool('pan')}
+                        className={`p-2 rounded-lg transition-all ${tool === 'pan' ? 'bg-white shadow-sm text-[#9a4430]' : 'text-stone-400 hover:text-stone-600'}`}
+                      >
+                        <Move size={20} />
+                      </button>
                     </div>
-                </ErrorBoundary>
-            )}
 
-            {state.step === AppStep.PROCESSING && (
-                <div className="flex flex-col items-center justify-center py-20 animate-pulse">
-                    <div className="w-20 h-20 border-4 border-[#9a4430]/20 border-t-[#9a4430] rounded-full animate-spin mb-8" />
-                    <h2 className="text-2xl font-bold text-stone-800">L'IA retouche votre bien...</h2>
-                    <p className="text-stone-500 mt-2">Cela peut prendre jusqu'à 30 secondes.</p>
+                    <div className="h-8 w-px bg-stone-200" />
+
+                    <div className="flex items-center gap-2">
+                      {COLORS.map((c) => (
+                        <button
+                          key={c.id}
+                          onClick={() => { setActiveColor(c.hex); setTool('brush'); }}
+                          className={`w-8 h-8 rounded-full border-4 transition-all ${activeColor === c.hex ? 'scale-110 shadow-md' : 'scale-90 opacity-40 hover:opacity-100'}`}
+                          style={{ backgroundColor: c.hex, borderColor: activeColor === c.hex ? 'white' : 'transparent' }}
+                          title={c.label}
+                        />
+                      ))}
+                    </div>
+
+                    <div className="h-8 w-px bg-stone-200" />
+
+                    <div className="flex items-center gap-3 flex-1 min-w-[150px]">
+                      <Sliders size={16} className="text-stone-400" />
+                      <input
+                        type="range"
+                        min="5"
+                        max="100"
+                        value={brushSize}
+                        onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                        className="flex-1 accent-[#9a4430]"
+                      />
+                      <span className="text-xs font-mono text-stone-500 w-8">{brushSize}px</span>
+                    </div>
+                  </div>
+
+                  <InpaintingCanvas
+                    imagePreview={state.originalImagePreview}
+                    activeColor={activeColor}
+                    brushSize={brushSize}
+                    tool={tool}
+                    onMasksChange={handleMasksChange}
+                  />
                 </div>
-            )}
 
-            {state.step === AppStep.RESULT && (
-            <ResultView 
-                originalImage={state.originalImagePreview!} 
-                correctedImage={state.correctedImage} 
-                onReset={handleReset} 
-                onRefine={() => {}} 
-                isProcessing={isLoading} 
+                <PromptManager
+                  prompts={prompts}
+                  usedColors={Object.keys(masks).filter(k => masks[k])}
+                  onPromptChange={handlePromptChange}
+                  onSubmit={handleSubmit}
+                  isProcessing={isLoading}
+                />
+              </div>
+            </ErrorBoundary>
+          )}
+
+          {state.step === AppStep.PROCESSING && (
+            <div className="flex flex-col items-center justify-center py-20 animate-pulse">
+              <div className="w-20 h-20 border-4 border-[#9a4430]/20 border-t-[#9a4430] rounded-full animate-spin mb-8" />
+              <h2 className="text-2xl font-bold text-stone-800">CASA KEYS AI travaille...</h2>
+              <ul className="text-stone-500 mt-4 space-y-2 text-center text-sm">
+                <li className="animate-in fade-in slide-in-from-bottom-2 duration-1000 delay-0">1. Analyse structurelle et lumineuse</li>
+                <li className="animate-in fade-in slide-in-from-bottom-2 duration-1000 delay-1000">2. Reformulation experte du prompt (Gemini)</li>
+                <li className="animate-in fade-in slide-in-from-bottom-2 duration-1000 delay-2000">3. Rendu Haute Fidélité (Nano Banana)</li>
+              </ul>
+            </div>
+          )}
+
+          {state.step === AppStep.RESULT && (
+            <ResultView
+              originalImage={state.originalImagePreview!}
+              correctedImage={state.correctedImage}
+              onReset={handleReset}
+              onRefine={handleRefine}
+              isProcessing={isLoading}
             />
-            )}
+          )}
         </main>
-        </div>
+      </div>
     </AuthGate>
   );
 };
