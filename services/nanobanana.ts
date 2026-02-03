@@ -38,64 +38,53 @@ export async function generateEnhancedImage(prompt: string, originalImageBase64:
     if (!API_KEY) throw new Error("Clé API Google manquante.");
 
     try {
-        // Try to target the specific Imagen model for image generation
-        // Note: 'gemini-2.0-flash' is multimodal input but primarily text/code output in current public API
         const MODEL_NAME = "imagen-3.0-generate-001";
         console.log(`🍌 Nano Banana (via ${MODEL_NAME}) generating...`);
+        console.log("📝 PROMPT SENT:", prompt);
 
         const genAI = new GoogleGenerativeAI(API_KEY);
-        const model = genAI.getGenerativeModel({
-            model: MODEL_NAME,
-            // definition for imagen often doesn't need responseModalities or temperature in the same way
-        });
+        // We use the latest model for image generation
+        const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-        // Strip prefix if present
-        const cleanBase64 = originalImageBase64.replace(/^data:image\/\w+;base64,/, "");
-
-        // Note: Imagen 3 API via AI Studio might not support Image-to-Image (Input Image) yet in public access.
-        // It mostly supports Text-to-Image.
-        // We will try sending text only if Image-to-Image format fails, or just wrap in Try/Catch.
-
+        // Imagen 3 T2I (Text-to-Image) is most stable on AI Studio right now.
         const parts: Part[] = [{ text: prompt }];
-        // Only add image if the model supports it. For now, Imagen 3 is T2I. 
-        // If we want I2I we might need to stick to Gemini 1.5 Pro Vision for *descriptions* or just simulation.
 
-        // Let's TRY generic generation.
         const result = await model.generateContent({
             contents: [{ role: 'user', parts }],
         });
 
         const response = await result.response;
+        console.log("🍌 AI Response received:", JSON.stringify(response).substring(0, 200) + "...");
 
         if (response.candidates && response.candidates.length > 0) {
             const candidate = response.candidates[0];
+
+            // Check for safety filter
+            if (candidate.finishReason === "SAFETY" || candidate.finishReason === "OTHER") {
+                throw new Error(`Génération bloquée par le filtre de sécurité (${candidate.finishReason}).`);
+            }
+
             if (candidate.content && candidate.content.parts) {
-                const parts = candidate.content.parts;
-                for (const part of parts) {
-                    // Check for new InlineData format or standard
+                for (const part of candidate.content.parts) {
                     if (part.inlineData && part.inlineData.data) {
+                        console.log("✅ Image data found in response!");
                         return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                     }
-                    // Sometimes it comes as 'executableCode' or references if tool use, but for Imagen it should be inlineData
                 }
             }
         }
 
-        throw new Error("Pas de retour image du modèle.");
+        throw new Error("Le modèle n'a pas renvoyé de données d'image. Vérifiez votre quota ou l'éligibilité de votre clé pour Imagen 3.");
 
     } catch (error: any) {
-        console.warn("🍌 Nano Banana API Fallback Triggered:", error.message);
+        console.error("🍌 Nano Banana Error:", error);
 
-        // CRITICAL FALLBACK for Demo/MVP:
-        // If the API call fails (likely because Image-to-Image/Inpainting is not public on this key),
-        // we return the ORIGINAL image so the User Flow is not blocked.
-        // This allows the user to see the "Result" page (even if unedited) and chat.
+        // Detailed error for the user
+        let msg = error.message || "Erreur inconnue";
+        if (msg.includes("404")) msg = "Modèle Imagen 3 non trouvé sur cette clé. Vérifiez l'activation dans Google AI Studio.";
+        if (msg.includes("429")) msg = "Quota dépassé (Trop de requêtes).";
+        if (msg.includes("403")) msg = "Accès refusé. La clé API n'a peut-être pas les droits pour Imagen 3.";
 
-        // In a real app, this would call Replicate/StableDiffusion.
-
-        // Simulate a short delay to feel like processing
-        await new Promise(r => setTimeout(r, 1500));
-
-        return originalImageBase64;
+        throw new Error(msg);
     }
 }
