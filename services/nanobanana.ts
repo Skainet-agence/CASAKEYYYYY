@@ -37,56 +37,41 @@ export async function findBestImageModel(): Promise<string> {
 export async function generateEnhancedImage(prompt: string, originalImageBase64: string, maskImageBase64?: string): Promise<string> {
     if (!API_KEY) throw new Error("Clé API Google manquante.");
 
-    const MODEL_CANDIDATES = [
-        "imagen-3.0-generate-001",
-        "imagen-3.0-fast-generate-001",
-        "gemini-2.0-flash", // Testing if direct IMAGE modality works
-        "gemini-3-pro-image-preview",
-        "imagen-2.0-generate-001"
-    ];
+    // winning model from discovery: gemini-3-pro-image-preview
+    const MODEL_NAME = "gemini-3-pro-image-preview";
 
-    let lastError: any = null;
-    console.log("🚀 Starting Model Discovery Race...");
+    try {
+        console.log(`🍌 Nano Banana Engine: ${MODEL_NAME} active.`);
+        const genAI = new GoogleGenerativeAI(API_KEY);
+        const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-    for (const modelName of MODEL_CANDIDATES) {
-        try {
-            console.log(`📡 Attempting generation with: ${modelName}`);
-            const genAI = new GoogleGenerativeAI(API_KEY);
-            const model = genAI.getGenerativeModel({ model: modelName });
+        const parts: Part[] = [{ text: prompt }];
 
-            const parts: Part[] = [{ text: prompt }];
+        const result = await model.generateContent({
+            contents: [{ role: 'user', parts }],
+        });
 
-            // Sequential attempt
-            const result = await model.generateContent({
-                contents: [{ role: 'user', parts }],
-            });
+        const response = await result.response;
 
-            const response = await result.response;
+        if (response.candidates && response.candidates.length > 0) {
+            const candidate = response.candidates[0];
 
-            if (response.candidates && response.candidates.length > 0) {
-                const candidate = response.candidates[0];
-                if (candidate.content && candidate.content.parts) {
-                    for (const part of candidate.content.parts) {
-                        if (part.inlineData && part.inlineData.data) {
-                            console.log(`✅ SUCCESS with model: ${modelName}`);
-                            return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                        }
+            if (candidate.finishReason === "SAFETY") {
+                throw new Error("Génération bloquée par les filtres de sécurité de Google.");
+            }
+
+            if (candidate.content && candidate.content.parts) {
+                for (const part of candidate.content.parts) {
+                    if (part.inlineData && part.inlineData.data) {
+                        return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                     }
                 }
             }
-            console.warn(`⚠️ Model ${modelName} did not return image data.`);
-        } catch (err: any) {
-            console.error(`❌ Model ${modelName} FAILED:`, err.message);
-            lastError = err;
         }
+
+        throw new Error("Le modèle n'a pas renvoyé d'image. Vérifiez votre quota.");
+    } catch (err: any) {
+        console.error(`❌ Nano Banana Engine Error:`, err);
+        throw new Error(err.message || "Erreur de génération d'image");
     }
-
-    // If we reach here, all candidates failed.
-    console.error("💀 ALL Image-Gen models failed.");
-
-    let msg = "Aucun modèle d'image (Imagen 3, Gemini 3) n'a fonctionné avec votre clé.";
-    if (lastError?.message?.includes("404")) msg += ` (Le dernier testé, ${MODEL_CANDIDATES[MODEL_CANDIDATES.length - 1]}, était introuvable)`;
-    if (lastError?.message?.includes("429")) msg += " (Quota atteint)";
-
-    throw new Error(msg);
 }
