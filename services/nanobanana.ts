@@ -41,11 +41,25 @@ export async function generateEnhancedImage(prompt: string, originalImageBase64:
     const MODEL_NAME = "gemini-3-pro-image-preview";
 
     try {
-        console.log(`🍌 Nano Banana Engine: ${MODEL_NAME} active.`);
+        console.log(`📡 Nano Banana: Grounding generation in source image DNA...`);
         const genAI = new GoogleGenerativeAI(API_KEY);
         const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-        const parts: Part[] = [{ text: prompt }];
+        // Multimodal input: Image + Prompt instructions
+        const parts: Part[] = [
+            {
+                inlineData: {
+                    data: originalImageBase64.replace(/^data:image\/\w+;base64,/, ""),
+                    mimeType: "image/jpeg"
+                }
+            },
+            {
+                text: `ACT AS AN EXPERT ARCHITECTURAL RETOUCHER. 
+            REFERENCE THE ATTACHED IMAGE AS THE ABSOLUTE GEOMETRIC FOUNDATION.
+            DO NOT CHANGE: Room layout, furniture positions, architectural fixed elements, window/door placement.
+            ONLY APPLY THESE CHANGES: ${prompt}`
+            }
+        ];
 
         const result = await model.generateContent({
             contents: [{ role: 'user', parts }],

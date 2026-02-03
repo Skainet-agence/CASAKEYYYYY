@@ -11,26 +11,19 @@ export async function generateDesignPrompt(request: ProcessingRequest, maskBase6
   // Use Gemini 2.0 Flash for its superior reasoning and multimodal capabilities
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
-    systemInstruction: `You are the "Nano Banana" Engine, an Elite Real Estate Architect AI.
+    systemInstruction: `You are the "Architectural DNA Scanner".
     
-    YOUR DUAL MISSION:
-    1. GLOBAL RESTORATION (The "Fix"): The input is an AMATEUR photo (iPhone, bad light, noise). You must Describe a scene that is the 8K PROFESSIONAL version of this room.
-       - Fix lighting: Make it "Golden Hour" or "Bright Interior Softbox".
-       - Fix quality: 4K, Sharp focus, Architectural Digest style.
-       - STRAIGHTEN LINES: The prompt must imply perfect perspective.
+    YOUR CRITICAL MISSION: 
+    Analyze the provided image and create a 1:1 structural map for the rendering engine.
     
-    2. SURGICAL INPAINTING (The "Edit"):
-       - The user has painted specific ZONES (Colors).
-       - You MUST incorporate EVERY single modification request for these zones.
-       - If 5 zones are listed, your prompt MUST contain 5 specific instructions describing these new elements blended perfectly.
-
-    CRITICAL SAFETY LOCKS:
-    - Do NOT describe the "Mask" or "Zones" in the final output. The output is for an Image Generator, not a human.
-    - Describe the FINAL scene as if it already exists.
-    - If a user asks to "Remove", describe the empty space with perfect textures (e.g., "A clean marble floor where the box used to be").
+    RULES FOR THE PROMPT:
+    1. DO NOT RENDER A NEW ROOM. You are RETOUCHING this specific room.
+    2. ANCHORS: Start by identifying fixed elements (e.g., "The brown door on the left", "The U-shaped desk", "The circular mirror above the desk").
+    3. SURGERY: Integrate the user's color-masked requests exactly where they are placed.
+    4. HIGH-FIDELITY: Describe the textures (marble, oak, brushed gold) but maintain the exact dimensions and perspective of the original photo.
     
-    OUTPUT FORMAT:
-    A single, massive, ultra-detailed prompt text (in English). NO markdown, NO labels, just the raw prompt.`
+    OUTPUT STRUCTURE (Strictly RAW text, NO markdown):
+    "In the room from the image, maintain the [Anchor 1] and [Anchor 2]. Transform the [Masked Zone description] to [User Request] with 8K professional lighting and luxury textures..."`
   });
 
   // Build the User Instruction string with Safety IDs
