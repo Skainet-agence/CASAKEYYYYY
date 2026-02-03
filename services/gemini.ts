@@ -1,204 +1,184 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { ProcessingRequest } from '../types';
+import { ProcessingRequest, MaskLayer } from '../types';
 
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 
-// Structured Zone Modification Interface
-interface ZoneModification {
-  zone: string;
-  color: string;
-  location: string;
-  action: string;
-  details: string;
-  preserve_attributes?: string[];
+// ═══════════════════════════════════════════════════════════════
+//                    BOUNDING BOX EXTRACTION
+// ═══════════════════════════════════════════════════════════════
+
+interface BoundingBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  area: number;
 }
 
-interface StructuredPrompt {
-  total_modifications: number;
-  protected_elements: string[];
-  forbidden_actions: string[];
-  modifications: ZoneModification[];
+// Extract bounding box from a mask layer
+async function extractBoundingBox(maskBase64: string): Promise<BoundingBox | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0);
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+
+      let minX = canvas.width, minY = canvas.height;
+      let maxX = 0, maxY = 0;
+      let hasPixels = false;
+
+      for (let y = 0; y < canvas.height; y++) {
+        for (let x = 0; x < canvas.width; x++) {
+          const i = (y * canvas.width + x) * 4;
+          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
+
+          // Check if pixel is non-black and visible
+          if (a > 50 && (r > 30 || g > 30 || b > 30)) {
+            hasPixels = true;
+            minX = Math.min(minX, x);
+            minY = Math.min(minY, y);
+            maxX = Math.max(maxX, x);
+            maxY = Math.max(maxY, y);
+          }
+        }
+      }
+
+      if (!hasPixels) {
+        resolve(null);
+        return;
+      }
+
+      const width = maxX - minX;
+      const height = maxY - minY;
+
+      resolve({
+        x: minX,
+        y: minY,
+        width,
+        height,
+        area: width * height
+      });
+    };
+    img.onerror = () => resolve(null);
+    img.src = maskBase64;
+  });
 }
 
-// Phase 1: Structured JSON Prompt Generation
-export async function generateDesignPrompt(request: ProcessingRequest, maskBase64?: string): Promise<string> {
+// ═══════════════════════════════════════════════════════════════
+//                    COORDINATE-BASED PROMPT GENERATION
+// ═══════════════════════════════════════════════════════════════
+
+interface ZoneWithCoordinates {
+  layer: MaskLayer;
+  bbox: BoundingBox;
+  priority: 'SMALL' | 'MEDIUM' | 'LARGE';
+}
+
+function getZonePriority(area: number): 'SMALL' | 'MEDIUM' | 'LARGE' {
+  if (area < 5000) return 'SMALL';
+  if (area < 50000) return 'MEDIUM';
+  return 'LARGE';
+}
+
+export async function generateDesignPrompt(request: ProcessingRequest, _maskBase64?: string): Promise<string> {
   if (!API_KEY) throw new Error("Clé API manquante.");
 
+  // Extract bounding boxes for all zones
+  const zonesWithCoords: ZoneWithCoordinates[] = [];
+
+  for (const layer of request.layers) {
+    const bbox = await extractBoundingBox(layer.base64Mask);
+    if (bbox) {
+      zonesWithCoords.push({
+        layer,
+        bbox,
+        priority: getZonePriority(bbox.area)
+      });
+    }
+  }
+
+  // Sort by area (smallest first = highest priority)
+  zonesWithCoords.sort((a, b) => a.bbox.area - b.bbox.area);
+
+  // Build coordinate-based instructions
+  const instructions = zonesWithCoords.map((zone, index) => {
+    const { layer, bbox, priority } = zone;
+    return `[${priority} ZONE ${index + 1}] Position: (X:${bbox.x}, Y:${bbox.y}), Size: ${bbox.width}x${bbox.height}px
+  Color Tag: ${layer.color.toUpperCase()}
+  Target Location: Center at approximately (${Math.round(bbox.x + bbox.width / 2)}, ${Math.round(bbox.y + bbox.height / 2)})
+  INSTRUCTION: ${layer.prompt}`;
+  }).join('\n\n');
+
+  // Use Gemini to enhance the prompt with context
   const genAI = new GoogleGenerativeAI(API_KEY);
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
-    systemInstruction: `You are the "Precision Lock Architect" - a surgical image editing planner.
+    systemInstruction: `You are an expert photo editing instruction writer.
 
-CRITICAL MISSION:
-Analyze the source image and user's zone-based instructions to create a STRUCTURED editing plan.
+Your job is to take zone-based edit requests and convert them into precise, executable instructions.
 
-ABSOLUTE RULES (VIOLATION = COMPLETE FAILURE):
-1. NEVER invent objects not visible in source image
-2. NEVER modify anything outside the painted mask zones
-3. When user says "straighten pillows" - KEEP THE ORIGINAL COLOR, only adjust position
-4. When user says "change X to color Y" - ONLY change the color, nothing else
-5. Each zone instruction applies ONLY to pixels covered by that color mask
+RULES:
+1. Output ONLY the enhanced editing instructions
+2. Keep the coordinate information exactly as provided
+3. Add visual context (e.g., "the small black cap on the chair leg")
+4. NEVER suggest adding objects not mentioned
+5. Small zones need MORE specific descriptions than large zones`
+  });
 
-OUTPUT FORMAT (Strict JSON):
-{
-  "total_modifications": <number>,
-  "protected_elements": ["element1", "element2", ...],
-  "forbidden_actions": ["add_lamp", "change_cushion_color", ...],
-  "modifications": [
+  const parts: any[] = [
+    { text: `Enhance these editing instructions for an AI image editor:\n\n${instructions}` },
     {
-      "zone": "RED|BLUE|GREEN|YELLOW|PURPLE",
-      "color": "#hex",
-      "location": "precise position description",
-      "action": "remove|change_color|adjust|turn_on|turn_off",
-      "details": "exact instruction",
-      "preserve_attributes": ["color", "shape", "size"]
-    }
-  ]
-}
-
-RESPOND WITH ONLY THE JSON, NO MARKDOWN FENCES.`
-  });
-
-  // Build zone instructions with explicit color preservation
-  const zoneInstructions: string[] = [];
-  request.layers.forEach((layer, index) => {
-    const colorName = layer.color.toUpperCase();
-    zoneInstructions.push(`ZONE ${index + 1} (${colorName}): "${layer.prompt}"`);
-  });
-
-  const parts: any[] = [];
-
-  // Instructions with explicit preservation rules
-  parts.push({
-    text: `ANALYSIS REQUEST:
-
-SOURCE IMAGE: Provided below (this is the SACRED reference - protect everything not explicitly mentioned)
-
-PAINTED ZONES AND USER REQUESTS:
-${zoneInstructions.join('\n')}
-
-CRITICAL CONTEXT:
-- If user mentions "pillows are straight" → ONLY adjust position, KEEP original blue color
-- If no zone covers an area → that area is 100% PROTECTED
-- Count the exact number of modifications requested (should match zone count)
-
-Generate the structured JSON plan.`
-  });
-
-  // Original Image
-  parts.push({
-    inlineData: {
-      data: request.originalImage.replace(/^data:image\/\w+;base64,/, ""),
-      mimeType: "image/jpeg"
-    }
-  });
-
-  // Mask (if available)
-  if (maskBase64) {
-    parts.push({
       inlineData: {
-        data: maskBase64.replace(/^data:image\/\w+;base64,/, ""),
-        mimeType: "image/png"
+        data: request.originalImage.replace(/^data:image\/\w+;base64,/, ""),
+        mimeType: "image/jpeg"
       }
-    });
-  }
+    }
+  ];
 
   try {
     const result = await model.generateContent(parts);
-    const jsonText = result.response.text().trim();
-
-    // Validate JSON structure
-    try {
-      const parsed: StructuredPrompt = JSON.parse(jsonText);
-      console.log("📋 Structured Plan:", parsed);
-
-      // Convert JSON to surgical prompt for the image generator
-      return convertToSurgicalPrompt(parsed, request);
-    } catch (parseError) {
-      console.warn("JSON parse failed, using raw response:", jsonText);
-      return jsonText;
-    }
+    const enhanced = result.response.text();
+    console.log("📋 Enhanced Coordinate Instructions:", enhanced);
+    return enhanced;
   } catch (e) {
-    console.error("Gemini Vision Error:", e);
-    return buildFallbackPrompt(request);
+    console.error("Gemini Error:", e);
+    return instructions; // Fallback to raw instructions
   }
 }
 
-// Convert structured JSON to surgical prompt
-function convertToSurgicalPrompt(plan: StructuredPrompt, request: ProcessingRequest): string {
-  const parts: string[] = [];
-
-  // Header with modification count
-  parts.push(`SURGICAL EDIT PLAN: Execute exactly ${plan.total_modifications} modifications.`);
-
-  // Protected elements (NEVER TOUCH)
-  if (plan.protected_elements.length > 0) {
-    parts.push(`\nPROTECTED (copy pixel-for-pixel from source): ${plan.protected_elements.join(', ')}`);
-  }
-
-  // Forbidden actions
-  if (plan.forbidden_actions.length > 0) {
-    parts.push(`\nFORBIDDEN ACTIONS: ${plan.forbidden_actions.join(', ')}`);
-  }
-
-  // Individual modifications with explicit preservation
-  parts.push('\nMODIFICATIONS:');
-  plan.modifications.forEach((mod, i) => {
-    let instruction = `[MOD ${i + 1}] Zone ${mod.zone} at ${mod.location}: ${mod.action.toUpperCase()} - ${mod.details}`;
-    if (mod.preserve_attributes && mod.preserve_attributes.length > 0) {
-      instruction += ` (PRESERVE: ${mod.preserve_attributes.join(', ')})`;
-    }
-    parts.push(instruction);
-  });
-
-  return parts.join('\n');
-}
-
-// Fallback prompt with explicit preservation rules
-function buildFallbackPrompt(request: ProcessingRequest): string {
-  let prompt = "SURGICAL RETOUCHING - STRICT PRESERVATION MODE:\n";
-  prompt += "RULE: Only modify explicitly mentioned areas. Everything else = pixel-perfect copy.\n\n";
-
-  request.layers.forEach((layer, i) => {
-    prompt += `[ZONE ${i + 1}] ${layer.color.toUpperCase()}: ${layer.prompt}\n`;
-  });
-
-  return prompt;
-}
-
-export async function generateRefinementPrompt(currentImagePrompt: string, userInstruction: string): Promise<string> {
+export async function generateRefinementPrompt(currentPrompt: string, userInstruction: string): Promise<string> {
   if (!API_KEY) throw new Error("Clé API manquante.");
 
   const genAI = new GoogleGenerativeAI(API_KEY);
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
-    systemInstruction: `You are the "Precision Lock" Engine (Refinement Mode).
-    
-MISSION: Surgically update an existing edit plan based on user feedback.
-
-RULES:
-1. NEVER add new objects not in original
-2. If user says "don't touch X" → add X to protected_elements
-3. Preserve the structure of the original plan
-4. Only modify the specific aspect mentioned
-
-OUTPUT: Return the updated surgical prompt maintaining all quality keywords.`
+    systemInstruction: `You are refining photo editing instructions based on user feedback.
+Keep all coordinate information. Only modify what the user specifically requests.`
   });
 
-  const metaPrompt = `
-CURRENT PLAN:
-"${currentImagePrompt}"
-
-USER CORRECTION:
-"${userInstruction}"
-
-Apply the correction while maintaining strict preservation rules.`;
-
   try {
-    const result = await model.generateContent(metaPrompt);
+    const result = await model.generateContent(`
+CURRENT INSTRUCTIONS:
+${currentPrompt}
+
+USER FEEDBACK:
+${userInstruction}
+
+OUTPUT: Updated instructions incorporating the feedback.`);
     return result.response.text();
   } catch (e) {
     console.error("Gemini Refine Error:", e);
-    return `${currentImagePrompt}\n\nADDITIONAL INSTRUCTION: ${userInstruction}`;
+    return `${currentPrompt}\n\nADDITIONAL: ${userInstruction}`;
   }
 }

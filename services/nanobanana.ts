@@ -2,53 +2,48 @@ import { GoogleGenerativeAI, Part } from "@google/generative-ai";
 
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 
-// Phase 2: Hardcoded Negative Constraints + Triple-Input Guide
+// ═══════════════════════════════════════════════════════════════
+//                    TEXT-ONLY COORDINATE GENERATION
+//                    (No mask image to avoid rectangle rendering)
+// ═══════════════════════════════════════════════════════════════
+
 export async function generateEnhancedImage(
     prompt: string,
     originalImageBase64: string,
-    maskImageBase64?: string
+    _maskImageBase64?: string // Ignored - we don't send mask anymore
 ): Promise<string> {
     if (!API_KEY) throw new Error("Clé API Google manquante.");
 
-    const MODEL_NAME = "gemini-3-pro-image-preview";
+    const MODEL_NAME = "gemini-2.0-flash-exp-image-generation";
 
     try {
-        console.log(`🔒 Precision Lock: Initiating surgical generation...`);
+        console.log(`🔒 Text-Only Precision: Generating without mask image...`);
         const genAI = new GoogleGenerativeAI(API_KEY);
-        const model = genAI.getGenerativeModel({ model: MODEL_NAME });
-
-        // Build the parts array: Source Image + Mask + Surgical Prompt
-        const parts: Part[] = [];
-
-        // 1. SOURCE IMAGE (Sacred Reference)
-        parts.push({
-            inlineData: {
-                data: originalImageBase64.replace(/^data:image\/\w+;base64,/, ""),
-                mimeType: "image/jpeg"
+        const model = genAI.getGenerativeModel({
+            model: MODEL_NAME,
+            generationConfig: {
+                // @ts-ignore - responseModalities is valid for image generation
+                responseModalities: ["Text", "Image"],
             }
         });
 
-        // 2. MASK (White = Edit, Black = Protect)
-        if (maskImageBase64) {
-            parts.push({
+        // Build parts: ONLY source image + text instructions (NO mask)
+        const parts: Part[] = [
+            {
                 inlineData: {
-                    data: maskImageBase64.replace(/^data:image\/\w+;base64,/, ""),
-                    mimeType: "image/png"
+                    data: originalImageBase64.replace(/^data:image\/\w+;base64,/, ""),
+                    mimeType: "image/jpeg"
                 }
-            });
-        }
+            },
+            { text: buildTextOnlyPrompt(prompt) }
+        ];
 
-        // 3. SURGICAL PROMPT with Hardcoded Negative Constraints
-        const surgicalPrompt = buildSurgicalPrompt(prompt, !!maskImageBase64);
-        parts.push({ text: surgicalPrompt });
+        console.log(`📋 Sending text-only instructions (no mask image)`);
 
-        console.log(`📋 Surgical Prompt Sent:\n${surgicalPrompt.substring(0, 500)}...`);
-
-        // Temperature control: Low = less creative = fewer hallucinations
         const result = await model.generateContent({
             contents: [{ role: 'user', parts }],
             generationConfig: {
-                temperature: 0.2,  // Very low creativity for precision
+                temperature: 0.2,
                 topP: 0.8,
                 topK: 40,
             }
@@ -66,7 +61,7 @@ export async function generateEnhancedImage(
             if (candidate.content && candidate.content.parts) {
                 for (const part of candidate.content.parts) {
                     if (part.inlineData && part.inlineData.data) {
-                        console.log("✅ Precision Lock: Image generated successfully");
+                        console.log("✅ Text-Only Generation: Success");
                         return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                     }
                 }
@@ -75,71 +70,50 @@ export async function generateEnhancedImage(
 
         throw new Error("Le modèle n'a pas renvoyé d'image. Vérifiez votre quota.");
     } catch (err: any) {
-        console.error(`❌ Precision Lock Error:`, err);
+        console.error(`❌ Generation Error:`, err);
         throw new Error(err.message || "Erreur de génération d'image");
     }
 }
 
-// Build surgical prompt with hardcoded negative constraints
-function buildSurgicalPrompt(userPrompt: string, hasMask: boolean): string {
-    const negativeConstraints = `
-═══════════════════════════════════════════════════════════════
-                    PRECISION LOCK PROTOCOL v2.0
-═══════════════════════════════════════════════════════════════
+// Build text-only prompt with strict constraints
+function buildTextOnlyPrompt(userPrompt: string): string {
+    return `
+PHOTO EDITING TASK
 
-ROLE: You are an ELITE architectural photo retoucher. Your job is 
-to execute SURGICAL modifications while preserving everything else.
+You are an expert photo retoucher. Edit the provided image according to these instructions.
 
-═══════════════════════════════════════════════════════════════
-                    ABSOLUTE PROHIBITIONS (VIOLATION = FAILURE)
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
+                    ABSOLUTE RULES (VIOLATION = FAILURE)
+══════════════════════════════════════════════════════════════════
 
-❌ NEVER add objects not visible in IMAGE 1 (source)
-❌ NEVER add lamps, plants, pillows, decorations, or furniture
-❌ NEVER change colors of items unless EXPLICITLY requested
-❌ NEVER modify areas covered by BLACK pixels in IMAGE 2 (mask)
-❌ NEVER reinterpret or "improve" the scene creatively
+❌ DO NOT add ANY objects not already in the source photo
+❌ DO NOT draw any rectangles, boxes, outlines, or markers
+❌ DO NOT add text, labels, or annotations
+❌ DO NOT change the overall composition or perspective
+❌ DO NOT modify areas that are not mentioned in the instructions
 
-═══════════════════════════════════════════════════════════════
-                    MANDATORY PRESERVATION
-═══════════════════════════════════════════════════════════════
+✅ ONLY modify the specific elements described below
+✅ Keep 99% of the image pixel-identical to the source
+✅ Apply changes SURGICALLY to the exact locations specified
 
-✅ IMAGE 1 is the SACRED SOURCE - copy it pixel-for-pixel where no edit is requested
-✅ Maintain exact composition, perspective, and dimensions
-✅ Preserve all colors unless change is explicitly requested
-✅ Keep object count exactly as in source (no additions, no removals unless asked)
-
-${hasMask ? `
-═══════════════════════════════════════════════════════════════
-                    MASK INTERPRETATION
-═══════════════════════════════════════════════════════════════
-
-IMAGE 2 is the MASK:
-- BLACK pixels = PROTECTED ZONE → Copy exactly from source
-- WHITE pixels = EDIT ZONE → Apply modifications below
-- ANY colored pixels = Specific edit zone` : ''}
-
-═══════════════════════════════════════════════════════════════
-                    SURGICAL MODIFICATIONS TO EXECUTE
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
+                    MODIFICATIONS TO APPLY
+══════════════════════════════════════════════════════════════════
 
 ${userPrompt}
 
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
                     OUTPUT REQUIREMENTS
-═══════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 
-Generate a single high-resolution image that:
-1. Looks nearly identical to the source except for the requested edits
-2. Contains NO new objects that weren't in the source
-3. Preserves the exact atmosphere and lighting style
-4. Maintains original colors where no change was requested
+Generate ONE edited image that:
+1. Looks like the original except for the requested changes
+2. Has NO visual markers, boxes, or outlines
+3. Is photorealistic and seamless
 `;
-
-    return negativeConstraints;
 }
 
-// Legacy function for model discovery (kept for compatibility)
+// Legacy function kept for compatibility
 export async function findBestImageModel(): Promise<string> {
-    return "gemini-3-pro-image-preview";
+    return "gemini-2.0-flash-exp-image-generation";
 }
