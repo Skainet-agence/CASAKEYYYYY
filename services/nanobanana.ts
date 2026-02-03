@@ -45,21 +45,40 @@ export async function generateEnhancedImage(prompt: string, originalImageBase64:
         const genAI = new GoogleGenerativeAI(API_KEY);
         const model = genAI.getGenerativeModel({ model: MODEL_NAME });
 
-        // Multimodal input: Image + Prompt instructions
+        // Triple-Input Guide: Source Image + Mask + Surgical Prompt
         const parts: Part[] = [
             {
                 inlineData: {
                     data: originalImageBase64.replace(/^data:image\/\w+;base64,/, ""),
                     mimeType: "image/jpeg"
                 }
-            },
-            {
-                text: `ACT AS AN EXPERT ARCHITECTURAL RETOUCHER. 
-            REFERENCE THE ATTACHED IMAGE AS THE ABSOLUTE GEOMETRIC FOUNDATION.
-            DO NOT CHANGE: Room layout, furniture positions, architectural fixed elements, window/door placement.
-            ONLY APPLY THESE CHANGES: ${prompt}`
             }
         ];
+
+        // Add Mask if available as the second visual anchor
+        if (maskImageBase64) {
+            parts.push({
+                inlineData: {
+                    data: maskImageBase64.replace(/^data:image\/\w+;base64,/, ""),
+                    mimeType: "image/png"
+                }
+            });
+        }
+
+        parts.push({
+            text: `ACT AS AN ELITE ARCHITECTURAL RETOUCHER. 
+            IMAGE 1 IS THE SOURCE.
+            ${maskImageBase64 ? "IMAGE 2 IS THE MASK (B&W)." : ""}
+            
+            STRICT RULES:
+            ${maskImageBase64 ? "- PIXELS MATCHING BLACK ON MASK: MUST REMAIN 1:1 IDENTICAL TO SOURCE IMAGE. NO CHANGES ALLOWED." : "- MAINTAIN 1:1 COMPOSITION AND PERSPECTIVE OF THE SOURCE IMAGE."}
+            ${maskImageBase64 ? "- PIXELS MATCHING WHITE ON MASK: APPLY THE RETOUCHING INSTRUCTIONS BELOW." : "- ONLY APPLY THE RETOUCHING INSTRUCTIONS BELOW."}
+            
+            RETOUCHING ORDERS: 
+            ${prompt}
+            
+            OUTPUT: A single 8K High-Fidelity image following these rules.`
+        });
 
         const result = await model.generateContent({
             contents: [{ role: 'user', parts }],
