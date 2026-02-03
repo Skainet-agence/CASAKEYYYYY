@@ -9,6 +9,7 @@ import { AppStep, EstateState, MaskLayer, ProcessingRequest } from './types';
 import { KeyRound, AlertTriangle, XCircle, Paintbrush, Eraser, Move, Sliders, RefreshCw } from 'lucide-react';
 import { processEstateImage, refineEstateImage } from './services/orchestrator';
 import { saveImageToDB, getImageFromDB, clearImageFromDB } from './services/storage';
+import { Toaster, toast } from 'sonner';
 
 // APP VERSION LOG
 console.log("🚀 CASA KEYS APP - VERSION 4.0 (DUAL AI ORCHESTRATION)");
@@ -172,7 +173,8 @@ const App: React.FC = () => {
 
     } catch (err: any) {
       console.error(err);
-      setState(prev => ({ ...prev, error: "Erreur d'importation." }));
+      toast.error("Erreur d'importation de l'image.");
+      // setState(prev => ({ ...prev, error: "Erreur d'importation." }));
     } finally {
       setIsLoading(false);
     }
@@ -231,8 +233,9 @@ const App: React.FC = () => {
       setState(prev => ({
         ...prev,
         step: AppStep.EDITING,
-        error: err.message || "Le traitement a échoué"
+        // error: err.message || "Le traitement a échoué" // Legacy
       }));
+      toast.error(err.message || "Le traitement a échoué");
     } finally {
       setIsLoading(false);
     }
@@ -255,7 +258,9 @@ const App: React.FC = () => {
       setState(prev => ({ ...prev, correctedImage: imageUrl }));
 
     } catch (err: any) {
-      setState(prev => ({ ...prev, error: "Echec de la retouche: " + err.message }));
+      console.error(err);
+      toast.error("Echec de la retouche: " + err.message);
+      setState(prev => ({ ...prev, error: "Echec de la retouche" })); // Keep state for safety but toast is primary
     } finally {
       setIsLoading(false);
     }
@@ -282,13 +287,8 @@ const App: React.FC = () => {
   return (
     <AuthGate onAuthenticated={handleAuthenticated}>
       <div className="min-h-screen bg-[#f5f5f4] text-stone-800 font-sans relative">
-        {state.error && (
-          <div className="bg-red-50 border-b border-red-200 p-4 sticky top-0 z-50 flex items-center gap-3">
-            <AlertTriangle className="text-red-600" size={20} />
-            <p className="text-sm text-red-700 flex-1">{state.error}</p>
-            <button onClick={() => setState(prev => ({ ...prev, error: null }))}><XCircle size={20} /></button>
-          </div>
-        )}
+        <Toaster richColors position="bottom-center" toastOptions={{ style: { background: '#1c1917', color: 'white', border: '1px solid #333' } }} />
+
 
         <header className="bg-white border-b border-stone-200 h-20 flex items-center px-8 shadow-sm justify-between">
           <div className="flex items-center gap-3">
