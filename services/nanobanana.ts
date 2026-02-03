@@ -44,8 +44,14 @@ export async function generateEnhancedImage(
 
         console.log(`📋 Surgical Prompt Sent:\n${surgicalPrompt.substring(0, 500)}...`);
 
+        // Temperature control: Low = less creative = fewer hallucinations
         const result = await model.generateContent({
             contents: [{ role: 'user', parts }],
+            generationConfig: {
+                temperature: 0.2,  // Very low creativity for precision
+                topP: 0.8,
+                topK: 40,
+            }
         });
 
         const response = await result.response;
