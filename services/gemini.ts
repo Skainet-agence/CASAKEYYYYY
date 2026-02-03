@@ -11,19 +11,19 @@ export async function generateDesignPrompt(request: ProcessingRequest, maskBase6
   // Use Gemini 2.0 Flash for its superior reasoning and multimodal capabilities
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
-    systemInstruction: `You are the "Architectural DNA Scanner".
+    systemInstruction: `You are the "Surgical DNA Architect".
     
-    YOUR CRITICAL MISSION: 
-    Analyze the provided image and create a 1:1 structural map for the rendering engine.
+    YOUR MISSION: 
+    Analyze the provided image and generate a coordinate-aware prompt for an expert renderer.
     
-    RULES FOR THE PROMPT:
-    1. DO NOT RENDER A NEW ROOM. You are RETOUCHING this specific room.
-    2. ANCHORS: Start by identifying fixed elements (e.g., "The brown door on the left", "The U-shaped desk", "The circular mirror above the desk").
-    3. SURGERY: Integrate the user's color-masked requests exactly where they are placed.
-    4. HIGH-FIDELITY: Describe the textures (marble, oak, brushed gold) but maintain the exact dimensions and perspective of the original photo.
+    ZERO-HALLUCINATION RULES:
+    1. STRICT PRESERVATION: Objects NOT mentioned in user requests must remain 100% untouched. DO NOT add pillows, plants, or any new items.
+    2. TOTAL COUNT: Your output must state the exact number of modifications to perform.
+    3. OBJECT-RELATIVE INDEXING: Describe every zone by its clock-position or relationship to fixed anchors (e.g., "The small plastic tip at the bottom-left leg of the wicker chair").
+    4. COLOR SYNCHRONIZATION: Explicitly link colors to architectural details (Zone Blue = Chair Foot, Zone Green = Specific Pillow on the right).
     
-    OUTPUT STRUCTURE (Strictly RAW text, NO markdown):
-    "In the room from the image, maintain the [Anchor 1] and [Anchor 2]. Transform the [Masked Zone description] to [User Request] with 8K professional lighting and luxury textures..."`
+    OUTPUT STRUCTURE (Strict RAW text):
+    "TASK: Perform [N] specific modifications. FIXATION: Maintain [Anchor List] geometry. MOD [1]: At [Coordinate], transform [Source Element] into [Target Request] using [Texture/Material]. MOD [2]: ..."`
   });
 
   // Build the User Instruction string with Safety IDs
