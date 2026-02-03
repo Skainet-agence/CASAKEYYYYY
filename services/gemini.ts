@@ -3,55 +3,89 @@ import { ProcessingRequest } from '../types';
 
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 
-// Fonction purement texte (Logique & Prompting)
+// Structured Zone Modification Interface
+interface ZoneModification {
+  zone: string;
+  color: string;
+  location: string;
+  action: string;
+  details: string;
+  preserve_attributes?: string[];
+}
+
+interface StructuredPrompt {
+  total_modifications: number;
+  protected_elements: string[];
+  forbidden_actions: string[];
+  modifications: ZoneModification[];
+}
+
+// Phase 1: Structured JSON Prompt Generation
 export async function generateDesignPrompt(request: ProcessingRequest, maskBase64?: string): Promise<string> {
   if (!API_KEY) throw new Error("Clé API manquante.");
 
   const genAI = new GoogleGenerativeAI(API_KEY);
-  // Use Gemini 2.0 Flash for its superior reasoning and multimodal capabilities
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
-    systemInstruction: `You are the "Surgical DNA Architect".
-    
-    YOUR MISSION: 
-    Analyze the provided image and generate a coordinate-aware prompt for an expert renderer.
-    
-    ZERO-HALLUCINATION RULES:
-    1. STRICT PRESERVATION: Objects NOT mentioned in user requests must remain 100% untouched. DO NOT add pillows, plants, or any new items.
-    2. TOTAL COUNT: Your output must state the exact number of modifications to perform.
-    3. OBJECT-RELATIVE INDEXING: Describe every zone by its clock-position or relationship to fixed anchors (e.g., "The small plastic tip at the bottom-left leg of the wicker chair").
-    4. COLOR SYNCHRONIZATION: Explicitly link colors to architectural details (Zone Blue = Chair Foot, Zone Green = Specific Pillow on the right).
-    
-    OUTPUT STRUCTURE (Strict RAW text):
-    "TASK: Perform [N] specific modifications. FIXATION: Maintain [Anchor List] geometry. MOD [1]: At [Coordinate], transform [Source Element] into [Target Request] using [Texture/Material]. MOD [2]: ..."`
+    systemInstruction: `You are the "Precision Lock Architect" - a surgical image editing planner.
+
+CRITICAL MISSION:
+Analyze the source image and user's zone-based instructions to create a STRUCTURED editing plan.
+
+ABSOLUTE RULES (VIOLATION = COMPLETE FAILURE):
+1. NEVER invent objects not visible in source image
+2. NEVER modify anything outside the painted mask zones
+3. When user says "straighten pillows" - KEEP THE ORIGINAL COLOR, only adjust position
+4. When user says "change X to color Y" - ONLY change the color, nothing else
+5. Each zone instruction applies ONLY to pixels covered by that color mask
+
+OUTPUT FORMAT (Strict JSON):
+{
+  "total_modifications": <number>,
+  "protected_elements": ["element1", "element2", ...],
+  "forbidden_actions": ["add_lamp", "change_cushion_color", ...],
+  "modifications": [
+    {
+      "zone": "RED|BLUE|GREEN|YELLOW|PURPLE",
+      "color": "#hex",
+      "location": "precise position description",
+      "action": "remove|change_color|adjust|turn_on|turn_off",
+      "details": "exact instruction",
+      "preserve_attributes": ["color", "shape", "size"]
+    }
+  ]
+}
+
+RESPOND WITH ONLY THE JSON, NO MARKDOWN FENCES.`
   });
 
-  // Build the User Instruction string with Safety IDs
-  let userInstructions = "";
+  // Build zone instructions with explicit color preservation
+  const zoneInstructions: string[] = [];
   request.layers.forEach((layer, index) => {
-    userInstructions += `[LOCK #${index + 1}] Zone ${layer.color} (${layer.id}): ${layer.prompt}\n`;
+    const colorName = layer.color.toUpperCase();
+    zoneInstructions.push(`ZONE ${index + 1} (${colorName}): "${layer.prompt}"`);
   });
 
-  // Prepare Multimodal Input
   const parts: any[] = [];
 
-  // 1. Instructions
+  // Instructions with explicit preservation rules
   parts.push({
-    text: `
-      INPUT ANALYSIS:
-      1. REFERENCE IMAGE: Amateur photo provided below.
-      2. MASK FILE: Defines the [LOCK] areas.
-      3. USER ORDERS:
-      ${userInstructions}
+    text: `ANALYSIS REQUEST:
 
-      EXECUTE PROTOCOL:
-      - Analyze the "Amateur" image.
-      - Mentally "Upgrade" it to 4K Luxury.
-      - For every [LOCK] instruction above, rewrite that specific part of the image description.
-      - For every non-masked area, describe it EXACTLY as is, but in "High Res".
-  `});
+SOURCE IMAGE: Provided below (this is the SACRED reference - protect everything not explicitly mentioned)
 
-  // 2. Original Image
+PAINTED ZONES AND USER REQUESTS:
+${zoneInstructions.join('\n')}
+
+CRITICAL CONTEXT:
+- If user mentions "pillows are straight" → ONLY adjust position, KEEP original blue color
+- If no zone covers an area → that area is 100% PROTECTED
+- Count the exact number of modifications requested (should match zone count)
+
+Generate the structured JSON plan.`
+  });
+
+  // Original Image
   parts.push({
     inlineData: {
       data: request.originalImage.replace(/^data:image\/\w+;base64,/, ""),
@@ -59,7 +93,7 @@ export async function generateDesignPrompt(request: ProcessingRequest, maskBase6
     }
   });
 
-  // 3. Mask (if available)
+  // Mask (if available)
   if (maskBase64) {
     parts.push({
       inlineData: {
@@ -71,55 +105,100 @@ export async function generateDesignPrompt(request: ProcessingRequest, maskBase6
 
   try {
     const result = await model.generateContent(parts);
-    return result.response.text();
+    const jsonText = result.response.text().trim();
+
+    // Validate JSON structure
+    try {
+      const parsed: StructuredPrompt = JSON.parse(jsonText);
+      console.log("📋 Structured Plan:", parsed);
+
+      // Convert JSON to surgical prompt for the image generator
+      return convertToSurgicalPrompt(parsed, request);
+    } catch (parseError) {
+      console.warn("JSON parse failed, using raw response:", jsonText);
+      return jsonText;
+    }
   } catch (e) {
     console.error("Gemini Vision Error:", e);
-    // Fallback if Vision fails
-    return `Luxury professional real estate photography, 8k resolution, perfect lighting. ${userInstructions}`;
+    return buildFallbackPrompt(request);
   }
+}
+
+// Convert structured JSON to surgical prompt
+function convertToSurgicalPrompt(plan: StructuredPrompt, request: ProcessingRequest): string {
+  const parts: string[] = [];
+
+  // Header with modification count
+  parts.push(`SURGICAL EDIT PLAN: Execute exactly ${plan.total_modifications} modifications.`);
+
+  // Protected elements (NEVER TOUCH)
+  if (plan.protected_elements.length > 0) {
+    parts.push(`\nPROTECTED (copy pixel-for-pixel from source): ${plan.protected_elements.join(', ')}`);
+  }
+
+  // Forbidden actions
+  if (plan.forbidden_actions.length > 0) {
+    parts.push(`\nFORBIDDEN ACTIONS: ${plan.forbidden_actions.join(', ')}`);
+  }
+
+  // Individual modifications with explicit preservation
+  parts.push('\nMODIFICATIONS:');
+  plan.modifications.forEach((mod, i) => {
+    let instruction = `[MOD ${i + 1}] Zone ${mod.zone} at ${mod.location}: ${mod.action.toUpperCase()} - ${mod.details}`;
+    if (mod.preserve_attributes && mod.preserve_attributes.length > 0) {
+      instruction += ` (PRESERVE: ${mod.preserve_attributes.join(', ')})`;
+    }
+    parts.push(instruction);
+  });
+
+  return parts.join('\n');
+}
+
+// Fallback prompt with explicit preservation rules
+function buildFallbackPrompt(request: ProcessingRequest): string {
+  let prompt = "SURGICAL RETOUCHING - STRICT PRESERVATION MODE:\n";
+  prompt += "RULE: Only modify explicitly mentioned areas. Everything else = pixel-perfect copy.\n\n";
+
+  request.layers.forEach((layer, i) => {
+    prompt += `[ZONE ${i + 1}] ${layer.color.toUpperCase()}: ${layer.prompt}\n`;
+  });
+
+  return prompt;
 }
 
 export async function generateRefinementPrompt(currentImagePrompt: string, userInstruction: string): Promise<string> {
   if (!API_KEY) throw new Error("Clé API manquante.");
 
   const genAI = new GoogleGenerativeAI(API_KEY);
-  // UPGRADE: Use Gemini 2.0 Flash for consistency with the main flow
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
-    systemInstruction: `You are the "Nano Banana" Engine (Refinement Mode).
+    systemInstruction: `You are the "Precision Lock" Engine (Refinement Mode).
     
-    MISSION: Update an existing high-end real estate prompt based on user feedback.
-    
-    CRITICAL QUALITY CONTROL:
-    - Retain ALL existing "8K/Luxury/Lighting/Texture" keywords from the ORIGINAL PROMPT.
-    - DO NOT simplify the prompt.
-    - Insert the user's requested change seamlessly into the scene description.
-    
-    Example:
-    Original: "Modern living room, white sofa, marble floor, 8k..."
-    User: "Make the sofa red"
-    Output: "Modern living room, RED VELVET sofa, marble floor, 8k..." (Note: Added texture to match luxury style)
-    
-    OUTPUT: Return ONLY the updated raw prompt.`
+MISSION: Surgically update an existing edit plan based on user feedback.
+
+RULES:
+1. NEVER add new objects not in original
+2. If user says "don't touch X" → add X to protected_elements
+3. Preserve the structure of the original plan
+4. Only modify the specific aspect mentioned
+
+OUTPUT: Return the updated surgical prompt maintaining all quality keywords.`
   });
 
   const metaPrompt = `
-      ORIGINAL PROMPT:
-      "${currentImagePrompt}"
+CURRENT PLAN:
+"${currentImagePrompt}"
 
-      USER FEEDBACK:
-      "${userInstruction}"
+USER CORRECTION:
+"${userInstruction}"
 
-      TASK:
-      Rewrite the prompt to apply the feedback while maintaining "Architectural Digest" quality.
-    `;
+Apply the correction while maintaining strict preservation rules.`;
 
   try {
     const result = await model.generateContent(metaPrompt);
     return result.response.text();
   } catch (e) {
     console.error("Gemini Refine Error:", e);
-    // Fallback logic
-    return `${currentImagePrompt}, ${userInstruction}`;
+    return `${currentImagePrompt}\n\nADDITIONAL INSTRUCTION: ${userInstruction}`;
   }
 }
