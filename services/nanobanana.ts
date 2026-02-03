@@ -6,7 +6,7 @@ const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 //                    NIKON Z9 IMAGE GENERATION ENGINE
 // ═══════════════════════════════════════════════════════════════
 
-const MODEL_NAME = "gemini-2.0-flash-exp-image-generation";
+const MODEL_NAME = "gemini-2.0-flash";
 
 // Generate the base quality upgrade (Nikon Z9 style)
 export async function generateBaseUpgrade(
@@ -121,10 +121,17 @@ function extractImageFromResponse(response: any): string {
                     return `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
                 }
             }
+
+            // If we are here, we have parts but no image. Log the Text!
+            const textPart = candidate.content.parts.find((p: any) => p.text);
+            if (textPart) {
+                console.error("❌ Model returned Text instead of Image:", textPart.text);
+                throw new Error(`Le modèle a répondu avec du texte: "${textPart.text.substring(0, 50)}..."`);
+            }
         }
     }
 
-    throw new Error("Le modèle n'a pas renvoyé d'image.");
+    throw new Error("Le modèle n'a pas renvoyé d'image (réponse vide).");
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -134,7 +141,7 @@ function extractImageFromResponse(response: any): string {
 export async function generateEnhancedImage(
     prompt: string,
     originalImageBase64: string,
-    _maskImageBase64?: string
+    _maskBase64?: string
 ): Promise<string> {
     // Redirect to single zone edit for compatibility
     return generateSingleZoneEdit(originalImageBase64, prompt);
