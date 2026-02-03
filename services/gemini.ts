@@ -4,181 +4,198 @@ import { ProcessingRequest, MaskLayer } from '../types';
 const API_KEY = import.meta.env.VITE_GOOGLE_API_KEY;
 
 // ═══════════════════════════════════════════════════════════════
-//                    BOUNDING BOX EXTRACTION
+//                    PROMPT ENHANCEMENT ENGINE
 // ═══════════════════════════════════════════════════════════════
 
-interface BoundingBox {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  area: number;
-}
-
-// Extract bounding box from a mask layer
-async function extractBoundingBox(maskBase64: string): Promise<BoundingBox | null> {
-  return new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.width;
-      canvas.height = img.height;
-      const ctx = canvas.getContext('2d');
-
-      if (!ctx) {
-        resolve(null);
-        return;
-      }
-
-      ctx.drawImage(img, 0, 0);
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-
-      let minX = canvas.width, minY = canvas.height;
-      let maxX = 0, maxY = 0;
-      let hasPixels = false;
-
-      for (let y = 0; y < canvas.height; y++) {
-        for (let x = 0; x < canvas.width; x++) {
-          const i = (y * canvas.width + x) * 4;
-          const r = data[i], g = data[i + 1], b = data[i + 2], a = data[i + 3];
-
-          // Check if pixel is non-black and visible
-          if (a > 50 && (r > 30 || g > 30 || b > 30)) {
-            hasPixels = true;
-            minX = Math.min(minX, x);
-            minY = Math.min(minY, y);
-            maxX = Math.max(maxX, x);
-            maxY = Math.max(maxY, y);
-          }
-        }
-      }
-
-      if (!hasPixels) {
-        resolve(null);
-        return;
-      }
-
-      const width = maxX - minX;
-      const height = maxY - minY;
-
-      resolve({
-        x: minX,
-        y: minY,
-        width,
-        height,
-        area: width * height
-      });
-    };
-    img.onerror = () => resolve(null);
-    img.src = maskBase64;
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════
-//                    COORDINATE-BASED PROMPT GENERATION
-// ═══════════════════════════════════════════════════════════════
-
-interface ZoneWithCoordinates {
+interface EnhancedZone {
   layer: MaskLayer;
-  bbox: BoundingBox;
-  priority: 'SMALL' | 'MEDIUM' | 'LARGE';
+  enhancedPrompt: string;
+  objectDescription: string;
+  locationDescription: string;
 }
 
-function getZonePriority(area: number): 'SMALL' | 'MEDIUM' | 'LARGE' {
-  if (area < 5000) return 'SMALL';
-  if (area < 50000) return 'MEDIUM';
-  return 'LARGE';
-}
-
-export async function generateDesignPrompt(request: ProcessingRequest, _maskBase64?: string): Promise<string> {
+// Enhance a single zone prompt to be ultra-precise
+async function enhanceZonePrompt(
+  layer: MaskLayer,
+  originalImageBase64: string,
+  zoneIndex: number
+): Promise<EnhancedZone> {
   if (!API_KEY) throw new Error("Clé API manquante.");
 
-  // Extract bounding boxes for all zones
-  const zonesWithCoords: ZoneWithCoordinates[] = [];
-
-  for (const layer of request.layers) {
-    const bbox = await extractBoundingBox(layer.base64Mask);
-    if (bbox) {
-      zonesWithCoords.push({
-        layer,
-        bbox,
-        priority: getZonePriority(bbox.area)
-      });
-    }
-  }
-
-  // Sort by area (smallest first = highest priority)
-  zonesWithCoords.sort((a, b) => a.bbox.area - b.bbox.area);
-
-  // Build coordinate-based instructions
-  const instructions = zonesWithCoords.map((zone, index) => {
-    const { layer, bbox, priority } = zone;
-    return `[${priority} ZONE ${index + 1}] Position: (X:${bbox.x}, Y:${bbox.y}), Size: ${bbox.width}x${bbox.height}px
-  Color Tag: ${layer.color.toUpperCase()}
-  Target Location: Center at approximately (${Math.round(bbox.x + bbox.width / 2)}, ${Math.round(bbox.y + bbox.height / 2)})
-  INSTRUCTION: ${layer.prompt}`;
-  }).join('\n\n');
-
-  // Use Gemini to enhance the prompt with context
   const genAI = new GoogleGenerativeAI(API_KEY);
   const model = genAI.getGenerativeModel({
     model: "gemini-2.0-flash",
-    systemInstruction: `You are an expert photo editing instruction writer.
+    systemInstruction: `You are an expert photo editing assistant.
+Your job is to transform a simple user instruction into a PRECISE, DETAILED editing command.
 
-Your job is to take zone-based edit requests and convert them into precise, executable instructions.
+OUTPUT FORMAT (JSON):
+{
+  "objectDescription": "Detailed description of the target object",
+  "locationDescription": "Precise location in the image (top-left, center, bottom-right, etc.)",
+  "enhancedPrompt": "The complete, precise editing instruction"
+}
 
 RULES:
-1. Output ONLY the enhanced editing instructions
-2. Keep the coordinate information exactly as provided
-3. Add visual context (e.g., "the small black cap on the chair leg")
-4. NEVER suggest adding objects not mentioned
-5. Small zones need MORE specific descriptions than large zones`
+- Be extremely specific about WHAT to change
+- Include the exact LOCATION in the image
+- Describe the expected RESULT
+- Keep the same intent as the original instruction`
   });
 
-  const parts: any[] = [
-    { text: `Enhance these editing instructions for an AI image editor:\n\n${instructions}` },
-    {
-      inlineData: {
-        data: request.originalImage.replace(/^data:image\/\w+;base64,/, ""),
-        mimeType: "image/jpeg"
-      }
-    }
-  ];
-
   try {
-    const result = await model.generateContent(parts);
-    const enhanced = result.response.text();
-    console.log("📋 Enhanced Coordinate Instructions:", enhanced);
-    return enhanced;
+    const result = await model.generateContent([
+      {
+        text: `Zone ${zoneIndex + 1} (${layer.color}): "${layer.prompt}"
+                
+Analyze this image and enhance the editing instruction to be ultra-precise.`
+      },
+      {
+        inlineData: {
+          data: originalImageBase64.replace(/^data:image\/\w+;base64,/, ""),
+          mimeType: "image/jpeg"
+        }
+      }
+    ]);
+
+    const responseText = result.response.text();
+
+    // Try to parse JSON response
+    try {
+      const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          layer,
+          enhancedPrompt: parsed.enhancedPrompt || layer.prompt,
+          objectDescription: parsed.objectDescription || "Unknown object",
+          locationDescription: parsed.locationDescription || "Unknown location"
+        };
+      }
+    } catch {
+      // Fallback: use raw response as enhanced prompt
+    }
+
+    return {
+      layer,
+      enhancedPrompt: responseText || layer.prompt,
+      objectDescription: "Target object",
+      locationDescription: "Specified location"
+    };
   } catch (e) {
-    console.error("Gemini Error:", e);
-    return instructions; // Fallback to raw instructions
+    console.error(`Prompt enhancement failed for zone ${zoneIndex}:`, e);
+    return {
+      layer,
+      enhancedPrompt: layer.prompt,
+      objectDescription: "Target object",
+      locationDescription: "Specified location"
+    };
   }
+}
+
+// Enhance all zone prompts
+export async function enhanceAllPrompts(request: ProcessingRequest): Promise<EnhancedZone[]> {
+  console.log(`🧠 Enhancing ${request.layers.length} zone prompts...`);
+
+  const enhanced: EnhancedZone[] = [];
+
+  for (let i = 0; i < request.layers.length; i++) {
+    const zone = await enhanceZonePrompt(request.layers[i], request.originalImage, i);
+    enhanced.push(zone);
+    console.log(`✅ Zone ${i + 1} enhanced: "${zone.enhancedPrompt.substring(0, 50)}..."`);
+  }
+
+  return enhanced;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//                    NIKON Z9 BASE UPGRADE PROMPT
+// ═══════════════════════════════════════════════════════════════
+
+export function getNikonZ9UpgradePrompt(): string {
+  return `PROFESSIONAL PHOTO REMASTER - NIKON Z9 QUALITY
+
+Transform this amateur photo into a professional-grade image as if captured with a NIKON Z9 camera:
+
+🔆 LIGHTING ENHANCEMENT:
+- Increase overall brightness by 30%
+- Add soft, natural ambient lighting
+- Eliminate harsh shadows
+- Create warm, inviting atmosphere
+
+📸 QUALITY UPGRADE:
+- 4K ultra-sharp resolution
+- Perfect focus on all elements
+- Zero motion blur
+- HDR-like dynamic range
+- Professional color grading
+
+🎨 COLOR CORRECTION:
+- Warm color temperature (5500K daylight)
+- Rich but natural saturation
+- No color banding or artifacts
+- Balanced whites and blacks
+
+⚠️ CRITICAL PRESERVATION:
+- Keep EXACT same composition
+- Keep ALL objects in their current positions
+- Keep room layout unchanged
+- NO new objects added
+- NO objects removed
+
+OUTPUT: One stunning, professionally-lit photograph.`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//                    SINGLE ZONE EDIT PROMPT
+// ═══════════════════════════════════════════════════════════════
+
+export function getSingleZoneEditPrompt(zone: EnhancedZone, zoneNumber: number, totalZones: number): string {
+  return `SURGICAL EDIT - Zone ${zoneNumber} of ${totalZones}
+
+You are making ONE precise edit to this professional photo.
+
+🎯 TARGET:
+Object: ${zone.objectDescription}
+Location: ${zone.locationDescription}
+
+📋 INSTRUCTION:
+${zone.enhancedPrompt}
+
+⚠️ ABSOLUTE RULES:
+- Change ONLY the described element
+- Keep EVERYTHING else pixel-identical
+- Maintain the premium Nikon Z9 quality
+- Do NOT add any new objects
+- Do NOT change colors of other elements
+- Do NOT draw any boxes, markers, or outlines
+
+OUTPUT: The same photo with ONLY this one modification applied.`;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//                    LEGACY FUNCTIONS (for compatibility)
+// ═══════════════════════════════════════════════════════════════
+
+export async function generateDesignPrompt(request: ProcessingRequest, _maskBase64?: string): Promise<string> {
+  // This is now mostly handled by enhanceAllPrompts, but kept for compatibility
+  const zones = request.layers.map((l, i) => `Zone ${i + 1} (${l.color}): ${l.prompt}`).join('\n');
+  return `Professional photo editing:\n${zones}`;
 }
 
 export async function generateRefinementPrompt(currentPrompt: string, userInstruction: string): Promise<string> {
   if (!API_KEY) throw new Error("Clé API manquante.");
 
   const genAI = new GoogleGenerativeAI(API_KEY);
-  const model = genAI.getGenerativeModel({
-    model: "gemini-2.0-flash",
-    systemInstruction: `You are refining photo editing instructions based on user feedback.
-Keep all coordinate information. Only modify what the user specifically requests.`
-  });
+  const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
   try {
     const result = await model.generateContent(`
-CURRENT INSTRUCTIONS:
-${currentPrompt}
-
-USER FEEDBACK:
-${userInstruction}
-
-OUTPUT: Updated instructions incorporating the feedback.`);
+Refine this editing instruction:
+Current: ${currentPrompt}
+User feedback: ${userInstruction}
+Output: Updated instruction incorporating the feedback.`);
     return result.response.text();
-  } catch (e) {
-    console.error("Gemini Refine Error:", e);
-    return `${currentPrompt}\n\nADDITIONAL: ${userInstruction}`;
+  } catch {
+    return `${currentPrompt}\n\nAdditional: ${userInstruction}`;
   }
 }
