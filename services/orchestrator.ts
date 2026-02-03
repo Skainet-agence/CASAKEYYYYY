@@ -60,17 +60,18 @@ async function createCompositeMask(layers: MaskLayer[]): Promise<string | undefi
 export async function processEstateImage(request: ProcessingRequest): Promise<OrchestratorResult> {
     console.log("🎻 Orchestrator: Starting Dual-AI Workflow");
 
-    // Step 1: Gemini Brain (Analyze & Plan)
-    console.log("🧠 Orchestrator: Consulting Gemini for Prompt Engineering...");
-    const optimizedPrompt = await generateDesignPrompt(request);
-    console.log("📝 Optimized Prompt:", optimizedPrompt);
-
-    // Step 2: Prepare Mask
+    // Step 0: Prep Mask
     console.log("🎨 Orchestrator: Merging masks...");
     const compositeMask = await createCompositeMask(request.layers);
     if (compositeMask) console.log("✅ Composite Mask Created");
 
-    // Step 3: Nano Banana (Render & Magic)
+    // Step 1: Gemini Brain (Analyze & Plan)
+    console.log("🧠 Orchestrator: Consulting Gemini for Prompt Engineering...");
+    // Pass compositeMask to enable Smart Visual Analysis
+    const optimizedPrompt = await generateDesignPrompt(request, compositeMask);
+    console.log("📝 Optimized Prompt:", optimizedPrompt);
+
+    // Step 2: Nano Banana (Render & Magic)
     console.log("🍌 Orchestrator: Sending to Nano Banana Pro for 4K Rendering...");
     const imageUrl = await generateEnhancedImage(optimizedPrompt, request.originalImage, compositeMask);
 
